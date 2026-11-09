@@ -8,6 +8,9 @@ const VIDEO_EXTENSIONS = new Set([
   '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.webm', '.flv', '.m4v', '.ts', '.mts', '.mpg', '.mpeg',
   '.asf', '.m2ts', '.divx', '.ogv', '.3gp', '.3g2', '.mxf', '.dv',
 ]);
+const PHOTO_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.webp', '.heic', '.avif', '.gif', '.bmp', '.tiff',
+]);
 const SCAN_PROGRESS_BATCH_SIZE = 25;
 const SCAN_FILE_STAT_BATCH_SIZE = 8;
 // Our own cache folders, plus source and dependency folders that are never a video library.
@@ -15,8 +18,23 @@ const IGNORED_DIRECTORIES = new Set(['.video-cull-thumbs', '.videocull', '.video
 const SOURCE_CODE_EXTENSION = /\.(?:ts|mts)$/i;
 const SOURCE_CODE_SAMPLE_SIZE = 8192;
 
+function isPhotoFile(filename) {
+  return PHOTO_EXTENSIONS.has(path.extname(String(filename || '')).toLowerCase());
+}
+
+function isVideoOnlyFile(filename) {
+  return VIDEO_EXTENSIONS.has(path.extname(String(filename || '')).toLowerCase());
+}
+
 function isVideoFile(filename) {
-  return VIDEO_EXTENSIONS.has(path.extname(filename).toLowerCase());
+  const ext = path.extname(String(filename || '')).toLowerCase();
+  return VIDEO_EXTENSIONS.has(ext) || PHOTO_EXTENSIONS.has(ext);
+}
+
+function matchesMediaMode(filename, mediaMode = 'both') {
+  if (mediaMode === 'videos') return isVideoOnlyFile(filename);
+  if (mediaMode === 'photos') return isPhotoFile(filename);
+  return isVideoFile(filename);
 }
 
 function shouldIgnoreDirectory(name) {
@@ -98,7 +116,7 @@ async function statVideoEntries(entries, statPath = fs.stat) {
           sizeBytes: stat.size,
           date: stat.mtimeMs,
           fileIdentity: createFileIdentity(stat),
-          durationSecs: null,
+          durationSecs: isPhotoFile(entryName) ? 0 : null,
           duplicateHash: makeDuplicateHash(stat.size, null),
           status: 'pending',
           thumbnails: [],
@@ -140,6 +158,7 @@ async function scanDirectory(dirPath, includeSubfolders, onProgress, options = {
   const readDir = typeof options.readdir === 'function' ? options.readdir : fs.readdir;
   const statPath = typeof options.statPath === 'function' ? options.statPath : fs.stat;
   const followLinks = options.followLinks === true;
+  const mediaMode = options.mediaMode === 'videos' || options.mediaMode === 'photos' ? options.mediaMode : 'both';
   // Every folder and video is listed once, by its real path: this stops link loops, and a video
   // reached twice would otherwise be paired with itself as a duplicate and deleted as the "copy".
   const walkedRealDirs = new Set();
@@ -236,7 +255,7 @@ async function scanDirectory(dirPath, includeSubfolders, onProgress, options = {
       }
 
       if (isDirectory && shouldIgnoreDirectory(entry.name)) continue;
-      if (isSymbolicLink && ((isDirectory && includeSubfolders) || (isFile && isVideoFile(entry.name)))) {
+      if (isSymbolicLink && ((isDirectory && includeSubfolders) || (isFile && matchesMediaMode(entry.name, mediaMode)))) {
         followedLinks.set(fullPath, realPath);
       }
 
@@ -244,7 +263,7 @@ async function scanDirectory(dirPath, includeSubfolders, onProgress, options = {
         await flushPendingVideoEntries();
         assertNotCancelled();
         await walk(fullPath, realPath);
-      } else if (isFile && isVideoFile(entry.name)) {
+      } else if (isFile && matchesMediaMode(entry.name, mediaMode)) {
         const realFileKey = pathKey(realPath);
         if (seenRealFiles.has(realFileKey)) continue;
         seenRealFiles.add(realFileKey);
@@ -270,6 +289,10 @@ async function scanDirectory(dirPath, includeSubfolders, onProgress, options = {
 
 module.exports = {
   scanDirectory,
+  isPhotoFile,
+  isVideoFile,
+  makeVideoId,
+  PHOTO_EXTENSIONS,
   __test__: {
     createProgressReporter,
     isTypeScriptSource,

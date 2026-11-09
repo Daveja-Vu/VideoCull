@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import useStore from '../store';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, X, RotateCcw, RefreshCw, FileDown, Database, Code2, ExternalLink, HeartHandshake, FolderOpen, Copy, Trash2, FileText } from 'lucide-react';
-import type { AppSettings, CacheLocationInfo, DistributionInfo, LegacyInstallStatus, LegalFileName, ToastInput, UpdateInfo } from '../types';
+import { FOLDER_HOTKEY_SLOTS, type AppSettings, type CacheLocationInfo, type DistributionInfo, type FolderHotkeySlot, type LegacyInstallStatus, type LegalFileName, type ToastInput, type UpdateInfo } from '../types';
 import { ALL_SHORTCUTS, findConflict, type KeybindSettingKey, type ShortcutGroup } from '../keybinds';
 import { DEFAULT_DUPLICATE_SETTINGS, DEFAULT_KEYBINDS, OPTIONAL_FEATURE_KEYS } from '../keybind-defaults';
 import type { Keybind } from '../keybinds';
@@ -557,6 +557,12 @@ export default function SettingsModal({ initialTab = 'general', tabRequestId = 0
                       help="Opens the folders that were loaded when VideoCull closed, unless you ended the session with Close Session."
                       checked={localSettings.reopenLastSession}
                       onChange={(checked) => handleChange('reopenLastSession', checked)}
+                    />
+                    <SwitchRow
+                      label="Remember window size and position"
+                      help="Restores the last window size and screen position when VideoCull opens instead of the default 1400 × 900 size."
+                      checked={localSettings.rememberWindowSize}
+                      onChange={(checked) => handleChange('rememberWindowSize', checked)}
                     />
                   </div>
                 </section>
@@ -1269,6 +1275,83 @@ export default function SettingsModal({ initialTab = 'general', tabRequestId = 0
                     </section>
                   );
                 })}
+
+                <section className="settings-subsection settings-section-divider">
+                  <h3 className="settings-subsection-title">Folder Hotkeys (1–9, 0)</h3>
+                  <span className="help-text" style={{ display: 'block', marginBottom: 10 }}>
+                    Press a number key (1–9, 0) in Review mode or while items are selected in Grid mode to move files directly into the assigned folder. Undo restores moved files.
+                  </span>
+                  <div className="folder-hotkeys-list">
+                    {FOLDER_HOTKEY_SLOTS.map((slot: FolderHotkeySlot) => {
+                      const entry = localSettings.folderHotkeys?.[slot];
+                      const folderPath = entry?.folderPath ?? '';
+                      const label = entry?.label ?? '';
+                      const defaultLabel = folderPath
+                        ? (folderPath.split(/[/\\]/).filter(Boolean).slice(-1)[0] || folderPath)
+                        : 'Label (e.g. Portraits)';
+                      return (
+                        <div key={slot} className="folder-hotkey-row">
+                          <kbd className="folder-hotkey-badge">{slot}</kbd>
+                          <input
+                            type="text"
+                            className="folder-hotkey-label-input"
+                            placeholder={defaultLabel}
+                            value={label}
+                            disabled={!folderPath}
+                            aria-label={`Folder hotkey ${slot} label`}
+                            onChange={(e) => {
+                              const nextLabel = e.target.value;
+                              const nextHotkeys = { ...(localSettings.folderHotkeys ?? {}) };
+                              if (folderPath) {
+                                nextHotkeys[slot] = nextLabel.trim()
+                                  ? { folderPath, label: nextLabel }
+                                  : { folderPath };
+                                handleChange('folderHotkeys', nextHotkeys);
+                              }
+                            }}
+                          />
+                          <span className="folder-hotkey-path" title={folderPath || 'No folder assigned'}>
+                            {folderPath || 'No folder assigned'}
+                          </span>
+                          <div className="folder-hotkey-actions">
+                            <button
+                              type="button"
+                              className="btn-browse-folder"
+                              onClick={async () => {
+                                const picked = await window.electronAPI?.selectDirectory();
+                                if (!picked) return;
+                                const nextHotkeys = { ...(localSettings.folderHotkeys ?? {}) };
+                                const existingLabel = nextHotkeys[slot]?.label?.trim();
+                                nextHotkeys[slot] = existingLabel
+                                  ? { folderPath: picked, label: existingLabel }
+                                  : { folderPath: picked };
+                                handleChange('folderHotkeys', nextHotkeys);
+                              }}
+                            >
+                              <FolderOpen size={13} />
+                              <span>{folderPath ? 'Change' : 'Choose folder'}</span>
+                            </button>
+                            {folderPath && (
+                              <button
+                                type="button"
+                                className="btn-clear-folder-hotkey"
+                                title={`Clear folder for key ${slot}`}
+                                aria-label={`Clear folder for key ${slot}`}
+                                onClick={() => {
+                                  const nextHotkeys = { ...(localSettings.folderHotkeys ?? {}) };
+                                  delete nextHotkeys[slot];
+                                  handleChange('folderHotkeys', nextHotkeys);
+                                }}
+                              >
+                                <X size={13} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
 
                 <p className="help-text" style={{ marginTop: 12 }}>
                   <strong>Note:</strong> Esc always closes/stops. System shortcuts ({modKeyName()}+O, F5, etc.) cannot be rebound here.

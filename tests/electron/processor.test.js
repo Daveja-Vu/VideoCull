@@ -335,3 +335,37 @@ test('an epoch-zero creation date is treated as no camera date', async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('photo files use single-thumbnail extraction without pre-input seek and parse EXIF DateTimeOriginal', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'videocull-photo-meta-'));
+  const photoPath = path.join(tempDir, 'shot.jpg');
+  await fs.writeFile(photoPath, 'fake-jpeg-bytes');
+  const originalProbe = mediaProcess.probe;
+  try {
+    assert.equal(__test.expectedThumbnailCount(null, 6, 3, photoPath), 1);
+    assert.deepEqual(__test.calculateTimestamps(0, 6, 3, photoPath), [0]);
+    const frameArgs = __test.buildFrameArgs(photoPath, 0, 'thumb_01.jpg', { hardwareAccel: true });
+    assert.equal(frameArgs.includes('-ss'), false);
+    assert.equal(frameArgs.includes("scale='min(1280,iw)':-1"), true);
+
+    mediaProcess.probe = async () => ({
+      format: { duration: '0.04', format_name: 'image2' },
+      streams: [{
+        codec_type: 'video',
+        codec_name: 'mjpeg',
+        width: 4000,
+        height: 3000,
+        tags: { DateTimeOriginal: '2025:07:15 14:30:00' },
+      }],
+    });
+    const meta = await __test.getVideoMetadata(photoPath);
+    assert.equal(meta.duration, 0);
+    assert.equal(meta.fps, null);
+    assert.equal(meta.width, 4000);
+    assert.equal(meta.height, 3000);
+    assert.equal(meta.creationTime, new Date('2025-07-15T14:30:00').getTime());
+  } finally {
+    mediaProcess.probe = originalProbe;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

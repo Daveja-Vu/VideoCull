@@ -112,6 +112,33 @@ export function calcThumbGrid(count: number): { cols: number; rows: number } {
 }
 
 /**
+ * Mirrors calculateTimestamps in electron/processor.js so clicking a thumbnail in Review mode
+ * can seek directly to that thumbnail's timestamp.
+ */
+export function calculateThumbnailTimestamps(
+  durationSecs: number | null | undefined,
+  count: number,
+  skipDelaySecs = 3,
+): number[] {
+  const duration = Number(durationSecs) || 0;
+  if (count <= 1 || duration <= 0) return [0];
+
+  const start = skipDelaySecs;
+  const end = duration * 0.97;
+  if (duration < skipDelaySecs || end <= start) {
+    return [Math.round(duration * 0.5 * 100) / 100];
+  }
+
+  const timestamps: number[] = [];
+  const step = (end - start) / count;
+  for (let i = 0; i < count; i += 1) {
+    const timestamp = start + step * 0.5 + step * i;
+    timestamps.push(Math.round(timestamp * 100) / 100);
+  }
+  return timestamps;
+}
+
+/**
  * Format a timestamp (ms) to a relative time string (e.g., "2h ago").
  */
 export function formatRelativeTime(ts: number | undefined): string {
@@ -135,6 +162,20 @@ export function formatRecentPath(p: string): string {
 }
 
 export const WEB_SUPPORTED_EXTS = ['.mp4', '.webm', '.ogg', '.ogv', '.mov', '.mkv', '.m4v'];
+export const PHOTO_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.avif', '.gif', '.bmp', '.tiff'];
+export const WEB_RENDERABLE_PHOTO_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.bmp'];
+const PHOTO_EXT_SET = new Set(PHOTO_EXTS);
+const WEB_RENDERABLE_PHOTO_EXT_SET = new Set(WEB_RENDERABLE_PHOTO_EXTS);
+
+export function isPhotoPath(path: string | null | undefined): boolean {
+  const ext = extensionFromPath(path);
+  return PHOTO_EXT_SET.has(ext);
+}
+
+export function isWebRenderablePhoto(path: string | null | undefined): boolean {
+  const ext = extensionFromPath(path);
+  return WEB_RENDERABLE_PHOTO_EXT_SET.has(ext);
+}
 const BUILT_IN_UNSUPPORTED_EXTS = new Set([
   '.wmv', '.asf', '.avi', '.flv', '.ts', '.mts', '.m2ts', '.mpg', '.mpeg', '.vob', '.divx',
   '.3gp', '.3g2', '.mxf', '.dv',
@@ -168,6 +209,7 @@ export function detectVideoCompatibility(
   path?: string | null
 ): boolean {
   const ext = extensionFromPath(path);
+  if (PHOTO_EXT_SET.has(ext)) return true;
   const codec = (videoCodec ?? '').toLowerCase();
 
   if (BUILT_IN_UNSUPPORTED_EXTS.has(ext) || BUILT_IN_UNSUPPORTED_CODECS.has(codec)) return false;
@@ -201,15 +243,89 @@ const CODEC_DISPLAY: Record<string, string> = {
   wmv3: 'WMV3',
   vc1: 'VC-1',
   h263: 'H.263',
+  mjpeg: 'JPEG',
+  png: 'PNG',
+  webp: 'WebP',
+  gif: 'GIF',
+  bmp: 'BMP',
+  tiff: 'TIFF',
 };
 
-export function formatCodecLabel(codec: string | null | undefined): string {
+const PHOTO_FORMAT_BY_EXT: Record<string, string> = {
+  '.jpg': 'JPEG',
+  '.jpeg': 'JPEG',
+  '.png': 'PNG',
+  '.webp': 'WebP',
+  '.heic': 'HEIC',
+  '.avif': 'AVIF',
+  '.gif': 'GIF',
+  '.bmp': 'BMP',
+  '.tiff': 'TIFF',
+};
+
+export function formatCodecLabel(codec: string | null | undefined, filePath?: string | null): string {
+  const ext = extensionFromPath(filePath);
+  if (ext && PHOTO_FORMAT_BY_EXT[ext]) {
+    return PHOTO_FORMAT_BY_EXT[ext];
+  }
   if (!codec) return '';
   return CODEC_DISPLAY[codec.toLowerCase()] ?? codec.toUpperCase();
 }
 
-export function formatResolutionLabel(width: number | null | undefined, height: number | null | undefined): string {
+export function formatMediaCountSummary(
+  items: ReadonlyArray<{ path: string }>,
+  totalItems?: ReadonlyArray<{ path: string }>,
+  contextItems?: ReadonlyArray<{ path: string }>,
+): string {
+  let photoCount = 0;
+  let videoCount = 0;
+  for (const item of items) {
+    if (isPhotoPath(item.path)) photoCount += 1;
+    else videoCount += 1;
+  }
+
+  const refItems = totalItems ?? contextItems ?? items;
+  let refPhotoCount = 0;
+  let refVideoCount = 0;
+  for (const item of refItems) {
+    if (isPhotoPath(item.path)) refPhotoCount += 1;
+    else refVideoCount += 1;
+  }
+
+  if (photoCount === 0 && refPhotoCount === 0) {
+    return totalItems
+      ? `${items.length} of ${totalItems.length} videos`
+      : `${items.length} ${items.length === 1 ? 'video' : 'videos'}`;
+  }
+
+  if ((photoCount > 0 && videoCount > 0) || (refPhotoCount > 0 && refVideoCount > 0)) {
+    const summary = `${photoCount.toLocaleString()} ${photoCount === 1 ? 'Photo' : 'Photos'}, ${videoCount.toLocaleString()} ${videoCount === 1 ? 'Video' : 'Videos'}`;
+    return totalItems
+      ? `${summary} (${items.length.toLocaleString()} of ${totalItems.length.toLocaleString()})`
+      : summary;
+  }
+
+  return totalItems
+    ? `${items.length.toLocaleString()} of ${totalItems.length.toLocaleString()} ${totalItems.length === 1 ? 'Photo' : 'Photos'}`
+    : `${photoCount.toLocaleString()} ${photoCount === 1 ? 'Photo' : 'Photos'}`;
+}
+
+export function formatMegapixels(width: number | null | undefined, height: number | null | undefined): string {
+  if (!width || !height || width <= 0 || height <= 0) return '';
+  const pixels = width * height;
+  const mp = pixels / 1_000_000;
+  if (mp >= 10) return `${Math.round(mp)} MP`;
+  if (mp >= 0.1) return `${mp.toFixed(1).replace(/\.0$/, '')} MP`;
+  return `${Math.max(1, Math.round(pixels / 1000))} KP`;
+}
+
+export function formatResolutionLabel(
+  width: number | null | undefined,
+  height: number | null | undefined,
+  isPhoto = false,
+): string {
   if (!width || !height) return '';
+  if (isPhoto) return formatMegapixels(width, height);
   const longestEdge = Math.max(width, height);
   const shortestEdge = Math.min(width, height);
 

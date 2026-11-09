@@ -50,6 +50,14 @@ function installElectronApiMock() {
     openInExplorer: vi.fn().mockResolvedValue(true),
     saveReviewState: vi.fn().mockResolvedValue(true),
     getCommands: vi.fn().mockResolvedValue([]),
+    moveVideosToFolder: vi.fn().mockImplementation(async (filePaths: string[], targetFolder: string) =>
+      filePaths.map((p, idx) => ({
+        path: p,
+        newPath: `${targetFolder}\\moved-${idx}.mp4`,
+        newId: `moved-${idx}`,
+        success: true,
+      })),
+    ),
   };
   Object.assign(window, { electronAPI });
   return electronAPI;
@@ -413,5 +421,50 @@ describe('ReviewMode behavior', () => {
     const { container } = render(<ReviewMode />);
 
     expect(container.querySelector('.review-mode')?.classList.contains(expectedClass)).toBe(true);
+  });
+
+  test('pressing folder hotkeys 1 and 2 moves the current item and advances to the next item', async () => {
+    const electronAPI = installElectronApiMock();
+    const alpha = makeVideo('alpha', { path: 'D:\\Media\\alpha.jpg', filename: 'alpha.jpg' });
+    const beta = makeVideo('beta', { path: 'D:\\Media\\beta.jpg', filename: 'beta.jpg' });
+    const gamma = makeVideo('gamma', { path: 'D:\\Media\\gamma.jpg', filename: 'gamma.jpg' });
+    const current = useStore.getState();
+    useStore.setState({
+      directory: 'D:\\Media',
+      directories: ['D:\\Media'],
+      videos: [alpha, beta, gamma],
+      filteredVideos: [alpha, beta, gamma],
+      reviewMode: true,
+      reviewIndex: 0,
+      reviewScopeIds: ['alpha', 'beta', 'gamma'],
+      settings: {
+        ...current.settings,
+        folderHotkeys: {
+          '1': { folderPath: 'D:\\Sorted\\Folder1', label: 'Keepers' },
+          '2': { folderPath: 'D:\\Sorted\\Folder2', label: 'Selects' },
+        },
+      },
+    });
+
+    render(<ReviewMode />);
+    expect(screen.getByText('alpha.jpg')).toBeTruthy();
+
+    // Even if a button has focus, pressing '1' moves the current file and advances to beta.jpg
+    const deleteButton = screen.getByRole('button', { name: /^Delete/ });
+    deleteButton.focus();
+    fireEvent.keyDown(deleteButton, { key: '1', code: 'Digit1' });
+
+    await waitFor(() => {
+      expect(electronAPI.moveVideosToFolder).toHaveBeenCalledWith(['D:\\Media\\alpha.jpg'], 'D:\\Sorted\\Folder1');
+      expect(screen.getByText('beta.jpg')).toBeTruthy();
+    });
+
+    // Pressing '2' moves beta.jpg to Folder2 and advances to gamma.jpg
+    fireEvent.keyDown(window, { key: '2', code: 'Digit2' });
+
+    await waitFor(() => {
+      expect(electronAPI.moveVideosToFolder).toHaveBeenCalledWith(['D:\\Media\\beta.jpg'], 'D:\\Sorted\\Folder2');
+      expect(screen.getByText('gamma.jpg')).toBeTruthy();
+    });
   });
 });

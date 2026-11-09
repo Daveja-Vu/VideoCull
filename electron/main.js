@@ -1,14 +1,14 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, nativeTheme, clipboard, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, Menu, nativeTheme, clipboard, powerSaveBlocker, screen } = require('electron');
 const path = require('path');
 const fs = require('fs/promises');
 const { randomUUID } = require('crypto');
 const os = require('os');
 const { performance: nodePerformance } = require('perf_hooks');
-const { scanDirectory } = require('./scanner');
+const { scanDirectory, isPhotoFile, makeVideoId } = require('./scanner');
 const { pathKey } = require('./path-key');
 const { processVideos, processMetadata, cancelProcessing, cancelThumbnails, cancelMetadata, getConcurrentLimit } = require('./processor');
 const cache = require('./cache');
-const { migrateCacheMoves } = require('./cache-migration');
+const { migrateCacheMoves, pathExists } = require('./cache-migration');
 const { createCacheService } = require('./cache-service');
 const { createGracefulShutdown, createProducerTracker } = require('./graceful-shutdown');
 const {
@@ -54,6 +54,7 @@ const {
   canServeThumbPath,
   canServeVideoPath,
   canRevealInExplorerPath,
+  createFileIdentity,
   detectCompatibility,
   escapeHtml,
   filterLoadedDeletionPaths,
@@ -327,20 +328,63 @@ guardIpcMain(
   (channel, event) => log.warn('[security] Rejected IPC from untrusted sender', { channel, url: String(event?.senderFrame?.url ?? '').slice(0, 200) }),
 );
 
-function createWindow(initialTheme = 'dark', micaTitleBar = true) {
+const DEFAULT_WINDOW_WIDTH = 1400;
+const DEFAULT_WINDOW_HEIGHT = 900;
+const MIN_WINDOW_WIDTH = 1080;
+const MIN_WINDOW_HEIGHT = 600;
+
+function resolveInitialWindowBounds(savedState) {
+  const fallback = { width: DEFAULT_WINDOW_WIDTH, height: DEFAULT_WINDOW_HEIGHT, isMaximized: false };
+  if (!savedState || typeof savedState !== 'object') return fallback;
+
+  let width = Math.max(MIN_WINDOW_WIDTH, Math.round(Number(savedState.width) || DEFAULT_WINDOW_WIDTH));
+  let height = Math.max(MIN_WINDOW_HEIGHT, Math.round(Number(savedState.height) || DEFAULT_WINDOW_HEIGHT));
+  const isMaximized = savedState.isMaximized === true;
+
+  try {
+    const displays = screen.getAllDisplays();
+    if (Number.isFinite(savedState.x) && Number.isFinite(savedState.y) && displays.length > 0) {
+      const x = Math.round(Number(savedState.x));
+      const y = Math.round(Number(savedState.y));
+      const visibleOnAnyDisplay = displays.some(({ workArea }) => {
+        const overlapX = Math.min(x + width, workArea.x + workArea.width) - Math.max(x, workArea.x);
+        const overlapY = Math.min(y + height, workArea.y + workArea.height) - Math.max(y, workArea.y);
+        return overlapX >= 100 && overlapY >= 100;
+      });
+      if (visibleOnAnyDisplay) {
+        return { width, height, x, y, isMaximized };
+      }
+    }
+    const primaryWorkArea = screen.getPrimaryDisplay()?.workAreaSize;
+    if (primaryWorkArea) {
+      width = Math.max(MIN_WINDOW_WIDTH, Math.min(width, primaryWorkArea.width));
+      height = Math.max(MIN_WINDOW_HEIGHT, Math.min(height, primaryWorkArea.height));
+    }
+  } catch {
+    // Fallback to saved dimensions without position if screen APIs fail
+  }
+
+  return { width, height, isMaximized };
+}
+
+function createWindow(initialTheme = 'dark', micaTitleBar = true, savedWindowState = null) {
   useMica = micaSupported && micaTitleBar;
   const theme = applyNativeTheme(initialTheme);
+  const resolvedBounds = resolveInitialWindowBounds(savedWindowState);
   // macOS takes the icon from the app bundle. Linux uses this one under X11; Wayland shells take it
   // from the desktop entry that matches the window, which only an installed AppImage has.
   const appIconPath = isMac ? undefined : app.isPackaged
     ? path.join(process.resourcesPath, process.platform === 'win32' ? 'videocull.ico' : 'videocull.png')
     : path.join(__dirname, '..', process.platform === 'win32' ? 'build/videocull.ico' : 'src/assets/videocull-icon.png');
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: resolvedBounds.width,
+    height: resolvedBounds.height,
+    ...(resolvedBounds.x !== undefined && resolvedBounds.y !== undefined
+      ? { x: resolvedBounds.x, y: resolvedBounds.y }
+      : {}),
     // Narrower squeezes the two-column Settings boxes; still fits 1366 x 768 at 125% scaling.
-    minWidth: 1080,
-    minHeight: 600,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     icon: appIconPath,
     // Mica only shows through a transparent window background; the page paints everything else.
     backgroundColor: useMica ? '#00000000' : getThemeBackgroundColor(theme),
@@ -373,6 +417,9 @@ function createWindow(initialTheme = 'dark', micaTitleBar = true) {
 
   mainWindow.once('ready-to-show', () => {
     storeWindowReady = isWindowsStore;
+    if (resolvedBounds.isMaximized) {
+      mainWindow.maximize();
+    }
     mainWindow.show();
     if (isWindowsStore) sendToRenderer('store-transition-ready', true);
     if (pendingProfileWarning) {
@@ -380,6 +427,43 @@ function createWindow(initialTheme = 'dark', micaTitleBar = true) {
       pendingProfileWarning = null;
     }
   });
+
+  let windowStateTimer = null;
+  const captureWindowState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return null;
+    const isMaximized = mainWindow.isMaximized();
+    const bounds = (isMaximized || mainWindow.isMinimized()) && typeof mainWindow.getNormalBounds === 'function'
+      ? mainWindow.getNormalBounds()
+      : mainWindow.getBounds();
+    if (!bounds || bounds.width < MIN_WINDOW_WIDTH || bounds.height < MIN_WINDOW_HEIGHT) return null;
+    return {
+      width: bounds.width,
+      height: bounds.height,
+      x: bounds.x,
+      y: bounds.y,
+      isMaximized,
+    };
+  };
+  const persistWindowStateNow = () => {
+    if (windowStateTimer) {
+      clearTimeout(windowStateTimer);
+      windowStateTimer = null;
+    }
+    const snapshot = captureWindowState();
+    if (snapshot) {
+      void writeJsonFile(WINDOW_STATE_FILE, snapshot).catch((err) => {
+        log.warn('[window-state] Failed to save window state:', err);
+      });
+    }
+  };
+  const scheduleWindowStatePersist = () => {
+    if (windowStateTimer) clearTimeout(windowStateTimer);
+    windowStateTimer = setTimeout(persistWindowStateNow, 250);
+  };
+  mainWindow.on('resize', scheduleWindowStatePersist);
+  mainWindow.on('move', scheduleWindowStatePersist);
+  mainWindow.on('maximize', scheduleWindowStatePersist);
+  mainWindow.on('unmaximize', scheduleWindowStatePersist);
   mainWindow.webContents.on('render-process-gone', async (_event, details) => {
     log.error('[renderer-crash] Render process gone', {
       ...details,
@@ -402,6 +486,7 @@ function createWindow(initialTheme = 'dark', micaTitleBar = true) {
   // Closing the last window quits the app, but only after the window is gone, and by then the
   // renderer can no longer flush its pending saves. Quit first and let the window close at the end.
   mainWindow.on('close', (event) => {
+    persistWindowStateNow();
     if (gracefulShutdown.phase() === 'complete') return;
     event.preventDefault();
     app.quit();
@@ -511,6 +596,14 @@ app.whenReady().then(async () => {
       let contentType = 'video/mp4';
       if (ext === '.webm') contentType = 'video/webm';
       else if (ext === '.ogg' || ext === '.ogv') contentType = 'video/ogg';
+      else if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+      else if (ext === '.png') contentType = 'image/png';
+      else if (ext === '.webp') contentType = 'image/webp';
+      else if (ext === '.gif') contentType = 'image/gif';
+      else if (ext === '.avif') contentType = 'image/avif';
+      else if (ext === '.bmp') contentType = 'image/bmp';
+      else if (ext === '.heic') contentType = 'image/heic';
+      else if (ext === '.tiff') contentType = 'image/tiff';
 
       const highWaterMark = 5 * 1024 * 1024; // 5MB chunks
       const rangeDetails = getRangeDetails(range, fileSize);
@@ -560,8 +653,11 @@ app.whenReady().then(async () => {
   });
 
   const initialConfig = await readJsonFile(CONFIG_FILE, {});
+  const initialWindowState = initialConfig.rememberWindowSize !== false
+    ? await readJsonFile(WINDOW_STATE_FILE, null)
+    : null;
   powerManager.setKeepAwake(initialConfig.keepAwakeWhileProcessing !== false);
-  createWindow(initialConfig.theme, initialConfig.micaTitleBar !== false);
+  createWindow(initialConfig.theme, initialConfig.micaTitleBar !== false, initialWindowState);
   setApplicationMenu();
   checkDistributedIndexAvailability().catch((err) => log.warn('[cache] Failed to check distributed cache locations:', err));
   if (updatesEnabled) setupAutoUpdater();
@@ -714,6 +810,7 @@ app.on('before-quit', (event) => {
 // where folderKey matches the DB filename (same sanitization).
 const THUMB_DIR = '.video-cull-thumbs';
 const CONFIG_FILE = 'settings.json';
+const WINDOW_STATE_FILE = 'window-state.json';
 const CACHE_INDEX_FILE = 'cache-index.json';
 const DISTRIBUTED_INDEX_FILE = 'distributed-index.json';
 const LEGACY_TRANSITION_FILE = 'legacy-install-transition.json';
@@ -1862,10 +1959,13 @@ ipcMain.handle('unload-directory', async (_event, dirPath) => {
 });
 
 // 2. Scan directory for video files
-ipcMain.handle('scan-directory', (_event, dirPath, includeSubfolders) => powerManager.trackWork(async () => {
+ipcMain.handle('scan-directory', (_event, dirPath, includeSubfolders, scanOptions = {}) => powerManager.trackWork(async () => {
   const scanToken = ++scanGeneration;
   const scanCacheRoots = new Set();
-  log.info(`[scan-directory] called for: ${dirPath}`);
+  const mediaMode = scanOptions?.mediaMode === 'videos' || scanOptions?.mediaMode === 'photos'
+    ? scanOptions.mediaMode
+    : 'both';
+  log.info(`[scan-directory] called for: ${dirPath} (mode=${mediaMode})`);
   // Security: Validate dirPath
   try {
     const stats = await fs.stat(dirPath);
@@ -1979,6 +2079,7 @@ ipcMain.handle('scan-directory', (_event, dirPath, includeSubfolders) => powerMa
   }, {
     includeVisitedDirs: true,
     followLinks: await shouldFollowLinks(),
+    mediaMode,
     assertNotCancelled: () => assertScanCurrent(scanToken),
   });
   assertScanCurrent(scanToken);
@@ -1992,7 +2093,7 @@ ipcMain.handle('scan-directory', (_event, dirPath, includeSubfolders) => powerMa
     scanCacheRoots,
     visitedFolders: visitedDirs,
     incompleteFolders: scanResult?.incompleteDirs,
-    shouldPrune: cacheOptions.autoPruneMissingSubfolderCache !== false,
+    shouldPrune: mediaMode === 'both' && cacheOptions.autoPruneMissingSubfolderCache !== false,
     diagnostics: scanDiagnostics,
   });
   assertScanCurrent(scanToken);
@@ -2366,6 +2467,7 @@ ipcMain.handle('generate-thumbnails', (_event, videos, dirPath, options = {}) =>
   const targetThumbCount = Math.max(1, Number(config.thumbsPerVideo) || 6);
   const skipIntroDelaySecs = config.skipIntroDelaySecs !== undefined ? Number(config.skipIntroDelaySecs) : 3;
   const expectedThumbCount = (video) => {
+    if (isPhotoFile(video.path) || video.durationSecs === 0) return 1;
     if (video.durationSecs != null && video.durationSecs > 0) {
       const end = video.durationSecs * 0.97;
       if (
@@ -2865,6 +2967,185 @@ ipcMain.handle('permanently-delete', async (_event, filePaths) => {
 
   results.push(...permanentResults);
   return finalizeDeletedFiles(results, cacheTargets);
+});
+
+const movedVideoRecordsByDestPath = new Map();
+
+async function moveFileAcrossDevices(sourcePath, destPath) {
+  try {
+    await fs.rename(sourcePath, destPath);
+  } catch (err) {
+    if (err?.code !== 'EXDEV') throw err;
+    await fs.copyFile(sourcePath, destPath, require('fs').constants.COPYFILE_EXCL);
+    await fs.unlink(sourcePath);
+  }
+}
+
+ipcMain.handle('move-videos-to-folder', async (_event, filePaths, targetFolder) => {
+  const results = [];
+  if (!targetFolder || typeof targetFolder !== 'string' || !targetFolder.trim()) {
+    return (Array.isArray(filePaths) ? filePaths : []).map((filePath) => ({
+      path: String(filePath || ''),
+      success: false,
+      error: 'No destination folder specified.',
+    }));
+  }
+  const resolvedTargetFolder = path.resolve(targetFolder.trim());
+  try {
+    await fs.mkdir(resolvedTargetFolder, { recursive: true });
+  } catch (err) {
+    return (Array.isArray(filePaths) ? filePaths : []).map((filePath) => ({
+      path: String(filePath || ''),
+      success: false,
+      error: `Cannot create destination folder: ${err?.message || String(err)}`,
+    }));
+  }
+
+  const validPaths = await filterLoadedDeletionPaths({
+    filePaths,
+    isValidLoadedPath,
+    onReject: (filePath) => {
+      log.warn(`[move-videos-to-folder] Rejected path outside loaded directory: ${filePath}`);
+      results.push({ path: filePath, success: false, error: 'Path is outside the loaded directory scope.' });
+    },
+  });
+
+  for (const filePath of validPaths) {
+    const realPath = knownRealPathsByPath.get(filePath) ?? filePath;
+    const expectedIdentity = knownVideoIdentitiesByPath.get(filePath);
+    const identityMatches = await matchesFileIdentityAtPath({
+      filePath: realPath,
+      expectedIdentity,
+      statPath: fs.stat,
+    });
+    if (!identityMatches) {
+      results.push({
+        path: filePath,
+        success: false,
+        error: 'File changed since it was scanned. Scan again before moving.',
+      });
+      continue;
+    }
+
+    const destPath = path.join(resolvedTargetFolder, path.basename(filePath));
+    if (path.resolve(destPath) === path.resolve(realPath)) {
+      results.push({
+        path: filePath,
+        newPath: destPath,
+        newId: knownVideoIdsByPath.get(filePath) ?? null,
+        success: true,
+      });
+      continue;
+    }
+
+    if (await pathExists(destPath)) {
+      results.push({
+        path: filePath,
+        success: false,
+        error: 'A file with that name already exists in the destination folder.',
+      });
+      continue;
+    }
+
+    try {
+      await moveFileAcrossDevices(realPath, destPath);
+      const destStat = await fs.stat(destPath);
+      const destIdentity = createFileIdentity(destStat);
+      const oldVideoId = knownVideoIdsByPath.get(filePath) ?? makeVideoId(filePath, destStat.size);
+      const newVideoId = makeVideoId(destPath, destStat.size);
+
+      movedVideoRecordsByDestPath.set(destPath, {
+        fromPath: filePath,
+        fromRealPath: realPath,
+        toPath: destPath,
+        oldVideoId,
+        newVideoId,
+        identity: destIdentity,
+      });
+
+      knownVideoPaths.delete(filePath);
+      knownVideoIdsByPath.delete(filePath);
+      knownVideoIdentitiesByPath.delete(filePath);
+      sessionRealPathOwners.delete(pathKey(realPath));
+      knownRealPathsByPath.delete(filePath);
+
+      if (await isPathWithinAnyDir(destPath, currentScanDirs)) {
+        knownVideoPaths.add(destPath);
+        knownVideoIdsByPath.set(destPath, newVideoId);
+        knownVideoIdentitiesByPath.set(destPath, destIdentity);
+        knownRealPathsByPath.set(destPath, destPath);
+        sessionRealPathOwners.set(pathKey(destPath), destPath);
+      }
+
+      results.push({
+        path: filePath,
+        newPath: destPath,
+        newId: newVideoId,
+        success: true,
+      });
+    } catch (err) {
+      results.push({
+        path: filePath,
+        success: false,
+        error: err?.message || String(err),
+      });
+    }
+  }
+
+  return results;
+});
+
+ipcMain.handle('restore-moved-videos', async (_event, moves) => {
+  const results = [];
+  for (const move of Array.isArray(moves) ? moves : []) {
+    const fromPath = typeof move?.fromPath === 'string' ? move.fromPath : '';
+    const toPath = typeof move?.toPath === 'string' ? move.toPath : '';
+    const record = movedVideoRecordsByDestPath.get(toPath);
+    if (!fromPath || !toPath || !record || record.fromPath !== fromPath) {
+      results.push({ path: toPath, fromPath, success: false, error: 'Move record is no longer available.' });
+      continue;
+    }
+
+    const identityMatches = await matchesFileIdentityAtPath({
+      filePath: toPath,
+      expectedIdentity: record.identity,
+      statPath: fs.stat,
+    });
+    if (!identityMatches) {
+      results.push({ path: toPath, fromPath, success: false, error: 'Moved file changed on disk and cannot be restored automatically.' });
+      continue;
+    }
+
+    if (await pathExists(record.fromRealPath)) {
+      results.push({ path: toPath, fromPath, success: false, error: 'A file already exists at the original location.' });
+      continue;
+    }
+
+    try {
+      await fs.mkdir(path.dirname(record.fromRealPath), { recursive: true });
+      await moveFileAcrossDevices(toPath, record.fromRealPath);
+      const restoredStat = await fs.stat(record.fromRealPath);
+      const restoredIdentity = createFileIdentity(restoredStat);
+
+      movedVideoRecordsByDestPath.delete(toPath);
+      knownVideoPaths.delete(toPath);
+      knownVideoIdsByPath.delete(toPath);
+      knownVideoIdentitiesByPath.delete(toPath);
+      sessionRealPathOwners.delete(pathKey(toPath));
+      knownRealPathsByPath.delete(toPath);
+
+      knownVideoPaths.add(fromPath);
+      knownVideoIdsByPath.set(fromPath, record.oldVideoId);
+      knownVideoIdentitiesByPath.set(fromPath, restoredIdentity);
+      knownRealPathsByPath.set(fromPath, record.fromRealPath);
+      sessionRealPathOwners.set(pathKey(record.fromRealPath), fromPath);
+
+      results.push({ path: toPath, fromPath, success: true });
+    } catch (err) {
+      results.push({ path: toPath, fromPath, success: false, error: err?.message || String(err) });
+    }
+  }
+  return results;
 });
 
 ipcMain.handle('export-report', async (_event, videos, dirPaths) => {

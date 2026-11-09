@@ -4,6 +4,11 @@ const { pathKey } = require('./path-key');
 
 const SERVABLE_VIDEO_EXTENSIONS = new Set([
   '.mp4', '.webm', '.ogg', '.ogv', '.mov', '.mkv', '.m4v',
+  '.jpg', '.jpeg', '.png', '.webp', '.heic', '.avif', '.gif', '.bmp', '.tiff',
+]);
+
+const PHOTO_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.webp', '.heic', '.avif', '.gif', '.bmp', '.tiff',
 ]);
 
 const COMPAT_UNSUPPORTED_EXTS = new Set([
@@ -64,6 +69,7 @@ function hasAnyCompatFormat(containerFormat, tokens) {
 function detectCompatibility(containerFormat, videoCodec, filePath) {
   const extMatch = (filePath || '').match(/\.[^.\\/]+$/);
   const ext = extMatch ? extMatch[0].toLowerCase() : '';
+  if (PHOTO_EXTENSIONS.has(ext)) return true;
   const codec = (videoCodec || '').toLowerCase();
 
   if (COMPAT_UNSUPPORTED_EXTS.has(ext) || COMPAT_UNSUPPORTED_CODECS.has(codec)) return false;

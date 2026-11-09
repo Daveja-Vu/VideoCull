@@ -3,14 +3,14 @@ import type {
   AppSettings, DuplicateComparisonMode, DuplicateGroup,
   Video, VideoReviewChanges, VideoReviewUpdate, VideoStatus, VideoStats, SidebarAggregates, VideoStore, ThumbReadyEvent,
   ScanProgress, ThumbProgress, UndoEntry,
-  StatusFilter, SortField, SortOrder, FolderSortField, FolderFilter, RatingFilter,
+  StatusFilter, MediaTypeFilter, MediaMode, SortField, PhotoSortField, SortOrder, FolderSortField, FolderFilter, RatingFilter, FolderHotkeySlot,
   ToastInput, ToastKind, SavedSession,
 } from './types';
 import { DEFAULT_DUPLICATE_SETTINGS, DEFAULT_FEATURES, DEFAULT_KEYBINDS, migrateSettings, normalizeFeatureSettings } from './keybind-defaults';
 import { checkSessionFolders, folderKey, pruneRecentSessions, rememberSession, sameSessionFolders, sessionKey } from './sessions';
 import { recordDevPerf } from './perf-dev';
 import { changeAffectsCurrentView, patchFilteredVideosPreservingOrder, type InvalidationField } from './store-invalidation';
-import { detectVideoCompatibility, folderInsideTest, formatRecentPath, isFolderInside, normalizeFolder } from './utils';
+import { detectVideoCompatibility, folderInsideTest, formatRecentPath, isFolderInside, isPhotoPath, normalizeFolder } from './utils';
 import { getPreloadedColorTheme } from './theme';
 
 export const DUPLICATE_METHOD_NAMES: Record<DuplicateComparisonMode, string> = { phash: 'pHash', visual: 'Visual Similarity' };
@@ -57,7 +57,9 @@ function getFolder(v: Video): string {
 const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 const FOLDER_COLLATOR = new Intl.Collator();
 
-type FilterInputs = Pick<VideoStore, 'videos' | 'searchQuery' | 'statusFilter' | 'minSizeFilter' | 'maxSizeFilter' | 'minDurationFilter' | 'maxDurationFilter' | 'folderFilter' | 'minRatingFilter' | 'favoritesFilter' | 'incompatibleFilter' | 'duplicateFilter'>;
+type FilterInputs = Pick<VideoStore, 'videos' | 'searchQuery' | 'statusFilter' | 'mediaTypeFilter' | 'minSizeFilter' | 'maxSizeFilter' | 'minDurationFilter' | 'maxDurationFilter' | 'folderFilter' | 'minRatingFilter' | 'favoritesFilter' | 'incompatibleFilter' | 'duplicateFilter'> & {
+  mediaMode?: MediaMode;
+};
 
 /** The videos every filter lets through, in session order. */
 function applyFilters(state: FilterInputs): Video[] {
@@ -81,6 +83,15 @@ function applyFilters(state: FilterInputs): Video[] {
 
   if (state.statusFilter !== 'all') {
     filtered = filtered.filter((v) => v.status === state.statusFilter);
+  }
+
+  const effectiveMediaType = state.mediaMode && state.mediaMode !== 'both'
+    ? state.mediaMode
+    : state.mediaTypeFilter;
+  if (effectiveMediaType === 'photos') {
+    filtered = filtered.filter((v) => isPhotoPath(v.path));
+  } else if (effectiveMediaType === 'videos') {
+    filtered = filtered.filter((v) => !isPhotoPath(v.path));
   }
 
   if (minSizeFilter > 0) {
@@ -126,39 +137,67 @@ function applyFilters(state: FilterInputs): Video[] {
   return filtered;
 }
 
-function computeFiltered(state: FilterInputs & Pick<VideoStore, 'sortBy' | 'sortOrder' | 'groupByFolder' | 'folderSortBy' | 'folderSortOrder'>): Video[] {
+function compareBySortField(a: Video, b: Video, field: SortField | PhotoSortField): number {
+  switch (field) {
+    case 'name':
+      return NAME_COLLATOR.compare(a.filename, b.filename);
+    case 'size':
+      return a.sizeBytes - b.sizeBytes;
+    case 'duration':
+      return (a.durationSecs || 0) - (b.durationSecs || 0);
+    case 'date': {
+      const dateA = a.metadataDate || a.date || 0;
+      const dateB = b.metadataDate || b.date || 0;
+      return dateA - dateB;
+    }
+    case 'rating':
+      return (a.rating ?? 0) - (b.rating ?? 0);
+    case 'resolution': {
+      const resolutionA = resolutionSortValue(a);
+      const resolutionB = resolutionSortValue(b);
+      const comparePhotoPixels = isPhotoPath(a.path) || isPhotoPath(b.path);
+      if (!comparePhotoPixels && resolutionA.tier !== resolutionB.tier) {
+        return resolutionA.tier - resolutionB.tier;
+      }
+      if (resolutionA.pixels !== resolutionB.pixels) return resolutionA.pixels - resolutionB.pixels;
+      if (resolutionA.longestEdge !== resolutionB.longestEdge) {
+        return resolutionA.longestEdge - resolutionB.longestEdge;
+      }
+      return resolutionA.shortestEdge - resolutionB.shortestEdge;
+    }
+    case 'fps':
+      return (a.fps ?? 0) - (b.fps ?? 0);
+  }
+}
+
+function computeFiltered(
+  state: FilterInputs & Pick<VideoStore, 'sortBy' | 'sortOrder' | 'groupByFolder' | 'folderSortBy' | 'folderSortOrder'> & Partial<Pick<VideoStore, 'photoSortBy' | 'photoSortOrder'>>,
+): Video[] {
   const startedAt = import.meta.env.DEV ? performance.now() : 0;
   let filtered = applyFilters(state);
   if (filtered === state.videos) filtered = [...filtered];
 
-  const getSortCmp = (a: Video, b: Video): number => {
-    switch (state.sortBy) {
-      case 'name':
-        return NAME_COLLATOR.compare(a.filename, b.filename);
-      case 'size':
-        return a.sizeBytes - b.sizeBytes;
-      case 'duration':
-        return (a.durationSecs || 0) - (b.durationSecs || 0);
-      case 'date': {
-        const dateA = a.metadataDate || a.date || 0;
-        const dateB = b.metadataDate || b.date || 0;
-        return dateA - dateB;
-      }
-      case 'rating':
-        return (a.rating ?? 0) - (b.rating ?? 0);
-      case 'resolution': {
-        const resolutionA = resolutionSortValue(a);
-        const resolutionB = resolutionSortValue(b);
-        if (resolutionA.tier !== resolutionB.tier) return resolutionA.tier - resolutionB.tier;
-        if (resolutionA.pixels !== resolutionB.pixels) return resolutionA.pixels - resolutionB.pixels;
-        if (resolutionA.longestEdge !== resolutionB.longestEdge) {
-          return resolutionA.longestEdge - resolutionB.longestEdge;
-        }
-        return resolutionA.shortestEdge - resolutionB.shortestEdge;
-      }
-      case 'fps':
-        return (a.fps ?? 0) - (b.fps ?? 0);
+  const photoSortBy: PhotoSortField = state.photoSortBy ?? (
+    state.sortBy === 'duration' || state.sortBy === 'fps' ? 'name' : state.sortBy
+  );
+  const photoSortOrder: SortOrder = state.photoSortOrder ?? state.sortOrder;
+
+  const compareItems = (a: Video, b: Video): number => {
+    const isPhotoA = isPhotoPath(a.path);
+    const isPhotoB = isPhotoPath(b.path);
+    if (isPhotoA && isPhotoB) {
+      const cmp = compareBySortField(a, b, photoSortBy);
+      return photoSortOrder === 'asc' ? cmp : -cmp;
     }
+    if (!isPhotoA && !isPhotoB) {
+      const cmp = compareBySortField(a, b, state.sortBy);
+      return state.sortOrder === 'asc' ? cmp : -cmp;
+    }
+    if (state.sortBy === photoSortBy && state.sortOrder === photoSortOrder) {
+      const cmp = compareBySortField(a, b, state.sortBy);
+      return state.sortOrder === 'asc' ? cmp : -cmp;
+    }
+    return isPhotoA ? 1 : -1;
   };
 
   if (state.groupByFolder) {
@@ -192,17 +231,11 @@ function computeFiltered(state: FilterInputs & Pick<VideoStore, 'sortBy' | 'sort
 
     filtered = [];
     for (const [, folderVideos] of folderEntries) {
-      folderVideos.sort((a, b) => {
-        const cmp = getSortCmp(a, b);
-        return state.sortOrder === 'asc' ? cmp : -cmp;
-      });
+      folderVideos.sort(compareItems);
       for (const video of folderVideos) filtered.push(video);
     }
   } else {
-    filtered.sort((a, b) => {
-      const cmp = getSortCmp(a, b);
-      return state.sortOrder === 'asc' ? cmp : -cmp;
-    });
+    filtered.sort(compareItems);
   }
   recordDevPerf('computeFiltered', performance.now() - startedAt, { items: state.videos.length });
   return filtered;
@@ -444,9 +477,14 @@ function codecPreferenceScore(video: Video, codecOrder: string[]): number {
 }
 
 function compareKeeperCandidates(a: Video, b: Video, order: string[], codecOrder: string[]): number {
+  const comparePhotoPixels = isPhotoPath(a.path) || isPhotoPath(b.path);
   for (const rule of order) {
     let diff = 0;
-    if (rule === 'resolution') diff = resolutionDisplayTier(a) - resolutionDisplayTier(b);
+    if (rule === 'resolution') {
+      diff = comparePhotoPixels
+        ? (finiteNumber(a.width) * finiteNumber(a.height)) - (finiteNumber(b.width) * finiteNumber(b.height))
+        : resolutionDisplayTier(a) - resolutionDisplayTier(b);
+    }
     else if (rule === 'videoBitrate') diff = finiteNumber(a.videoBitrate ?? a.totalBitrate) - finiteNumber(b.videoBitrate ?? b.totalBitrate);
     else if (rule === 'duration') diff = finiteNumber(a.durationSecs) - finiteNumber(b.durationSecs);
     else if (rule === 'fps') diff = finiteNumber(a.fps) - finiteNumber(b.fps);
@@ -960,6 +998,7 @@ const useStore = create<VideoStore>((set, get) => ({
   directory: null,
   directories: [],
   includeSubfolders: true,
+  mediaMode: 'both',
 
   // ── Videos ──
   videos: [],
@@ -977,8 +1016,11 @@ const useStore = create<VideoStore>((set, get) => ({
   // ── Filters & Sort ──
   searchQuery: '',
   statusFilter: 'all',
+  mediaTypeFilter: 'all',
   sortBy: 'name',
   sortOrder: 'asc',
+  photoSortBy: 'name',
+  photoSortOrder: 'asc',
   minSizeFilter: 0,
   maxSizeFilter: null,
   minDurationFilter: 0,
@@ -1048,10 +1090,12 @@ const useStore = create<VideoStore>((set, get) => ({
     lastSession: null,
     recentSessions: [],
     reopenLastSession: false,
+    rememberWindowSize: true,
     autoUpdates: true,
     globalMute: false,
     features: { ...DEFAULT_FEATURES },
     duplicates: { ...DEFAULT_DUPLICATE_SETTINGS },
+    folderHotkeys: {},
     ...DEFAULT_KEYBINDS,
   },
 
@@ -1250,6 +1294,17 @@ const useStore = create<VideoStore>((set, get) => ({
     const nextSettings = withSession(settings, { folders: directories, includeSubfolders: val });
     set({ includeSubfolders: val, settings: nextSettings });
     saveSettingsQuietly(nextSettings);
+  },
+
+  setMediaMode: (mediaMode: MediaMode) => {
+    const mediaTypeFilter: MediaTypeFilter = mediaMode === 'both' ? 'all' : mediaMode;
+    const state = { ...get(), mediaMode, mediaTypeFilter };
+    set({
+      mediaMode,
+      mediaTypeFilter,
+      filteredVideos: computeFiltered(state),
+      reviewIndex: 0,
+    });
   },
 
   setVideos: (videos: Video[]) => {
@@ -1456,6 +1511,84 @@ const useStore = create<VideoStore>((set, get) => ({
     if (stack.length === 0) return;
     const action = stack.pop()!;
 
+    if (action.movedFiles && action.movedFiles.length > 0) {
+      set({ undoStack: stack });
+      void (async () => {
+        const moves = action.movedFiles!.map((m) => ({ fromPath: m.fromPath, toPath: m.toPath }));
+        let results: Awaited<ReturnType<NonNullable<typeof window.electronAPI>['restoreMovedVideos']>> = [];
+        try {
+          results = await window.electronAPI?.restoreMovedVideos(moves) ?? [];
+        } catch (err) {
+          get().pushToast({
+            title: 'Undo move failed',
+            detail: err instanceof Error ? err.message : 'Could not move file back to its original folder.',
+            kind: 'error',
+          });
+          return;
+        }
+        const restoredPaths = new Set(results.filter((r) => r.success).map((r) => r.fromPath));
+        const failedCount = results.filter((r) => !r.success).length;
+        if (restoredPaths.size === 0) {
+          get().pushToast({
+            title: 'Undo move failed',
+            detail: results[0]?.error || 'Could not move file back to its original folder.',
+            kind: 'error',
+          });
+          return;
+        }
+
+        const currentState = get();
+        const movedEntriesToRestore = action.movedFiles!.filter((m) => restoredPaths.has(m.fromPath));
+        const newIdsToDrop = new Set(movedEntriesToRestore.map((m) => m.newId).filter((id): id is string => Boolean(id)));
+        const restoredSnapshots = movedEntriesToRestore.map((m) => ({
+          ...m.videoSnapshot,
+          status: action.previousStatuses?.[m.videoSnapshot.id] ?? action.previousStatus ?? m.videoSnapshot.status,
+        }));
+        const existingIds = new Set(currentState.videos.map((v) => v.id));
+        const nextVideos = [
+          ...currentState.videos.filter((v) => !newIdsToDrop.has(v.id)),
+          ...restoredSnapshots.filter((v) => !existingIds.has(v.id)),
+        ];
+
+        let nextReviewScopeIds = currentState.reviewScopeIds ? [...currentState.reviewScopeIds] : null;
+        if (nextReviewScopeIds) {
+          for (const entry of movedEntriesToRestore) {
+            if (!nextReviewScopeIds.includes(entry.videoSnapshot.id)) {
+              const insertAt = typeof entry.wasInReviewScopeIndex === 'number'
+                ? Math.max(0, Math.min(entry.wasInReviewScopeIndex, nextReviewScopeIds.length))
+                : Math.min(action.previousIndex, nextReviewScopeIds.length);
+              nextReviewScopeIds.splice(insertAt, 0, entry.videoSnapshot.id);
+            }
+          }
+        }
+
+        const nextState = { ...currentState, videos: nextVideos };
+        const filteredVideos = computeFiltered(nextState);
+        const activeVideo = currentState.reviewMode
+          ? getVideoByReviewIndex(nextVideos, nextReviewScopeIds, filteredVideos, action.previousIndex)
+          : null;
+
+        set({
+          videos: nextVideos,
+          filteredVideos,
+          stats: computeStats(nextVideos),
+          sidebarAggregates: computeSidebarAggregates(nextVideos),
+          reviewIndex: action.previousIndex,
+          reviewScopeIds: nextReviewScopeIds,
+          activeReviewVideoPath: currentState.reviewMode ? activeVideo?.path ?? null : currentState.activeReviewVideoPath,
+        });
+
+        get().pushToast({
+          title: restoredPaths.size === 1
+            ? `Restored ${movedEntriesToRestore[0]?.videoSnapshot.filename}`
+            : `Restored ${restoredPaths.size} files`,
+          detail: failedCount > 0 ? `${failedCount} could not be restored.` : undefined,
+          kind: failedCount > 0 ? 'warning' : 'info',
+        });
+      })();
+      return;
+    }
+
     const videos = stateBefore.videos.map((v) => {
       if (action.videoIds && action.previousStatuses && action.videoIds.includes(v.id)) {
         return { ...v, status: action.previousStatuses[v.id] ?? v.status };
@@ -1495,6 +1628,11 @@ const useStore = create<VideoStore>((set, get) => ({
     set({ statusFilter: filter, filteredVideos: computeFiltered(state), reviewIndex: 0 });
   },
 
+  setMediaTypeFilter: (mediaTypeFilter: MediaTypeFilter) => {
+    const state = { ...get(), mediaTypeFilter };
+    set({ mediaTypeFilter, filteredVideos: computeFiltered(state), reviewIndex: 0 });
+  },
+
   setSortBy: (sortBy: SortField) => {
     const state = { ...get(), sortBy };
     set({ sortBy, filteredVideos: computeFiltered(state) });
@@ -1503,6 +1641,16 @@ const useStore = create<VideoStore>((set, get) => ({
   setSortOrder: (sortOrder: SortOrder) => {
     const state = { ...get(), sortOrder };
     set({ sortOrder, filteredVideos: computeFiltered(state) });
+  },
+
+  setPhotoSortBy: (photoSortBy: PhotoSortField) => {
+    const state = { ...get(), photoSortBy };
+    set({ photoSortBy, filteredVideos: computeFiltered(state) });
+  },
+
+  setPhotoSortOrder: (photoSortOrder: SortOrder) => {
+    const state = { ...get(), photoSortOrder };
+    set({ photoSortOrder, filteredVideos: computeFiltered(state) });
   },
 
   setMinSizeFilter: (minSizeFilter: number) => {
@@ -1555,6 +1703,7 @@ const useStore = create<VideoStore>((set, get) => ({
   clearFilters: () => {
     const cleared = {
       statusFilter: 'all' as StatusFilter,
+      mediaTypeFilter: 'all' as MediaTypeFilter,
       folderFilter: null,
       favoritesFilter: false,
       incompatibleFilter: false,
@@ -1887,6 +2036,166 @@ const useStore = create<VideoStore>((set, get) => ({
     });
   },
 
+  moveVideosToHotkeyFolder: async (slot: FolderHotkeySlot, videoIds?: string[]) => {
+    const stateBefore = get();
+    const hotkeyConfig = stateBefore.settings.folderHotkeys?.[slot];
+    if (!hotkeyConfig?.folderPath || !window.electronAPI?.moveVideosToFolder) return false;
+
+    const targetFolder = hotkeyConfig.folderPath.trim();
+    if (!targetFolder) return false;
+
+    let targetVideos: Video[] = [];
+    if (videoIds && videoIds.length > 0) {
+      const idSet = new Set(videoIds);
+      targetVideos = stateBefore.videos.filter((v) => idSet.has(v.id));
+    } else if (stateBefore.reviewMode) {
+      const activeVideo = getVideoByReviewIndex(
+        stateBefore.videos,
+        stateBefore.reviewScopeIds,
+        stateBefore.filteredVideos,
+        stateBefore.reviewIndex,
+      );
+      if (activeVideo) targetVideos = [activeVideo];
+    } else if (stateBefore.gridSelectionIds.size > 0) {
+      targetVideos = stateBefore.videos.filter((v) => stateBefore.gridSelectionIds.has(v.id));
+    }
+
+    if (targetVideos.length === 0) return false;
+
+    const displayLabel = hotkeyConfig.label?.trim() || folderLabel(targetFolder);
+    let results: Awaited<ReturnType<NonNullable<typeof window.electronAPI>['moveVideosToFolder']>>;
+    try {
+      results = await window.electronAPI.moveVideosToFolder(
+        targetVideos.map((v) => v.path),
+        targetFolder,
+      );
+    } catch (err) {
+      get().pushToast({
+        title: `Could not move to ${displayLabel}`,
+        detail: err instanceof Error ? err.message : 'File move failed.',
+        kind: 'error',
+      });
+      return false;
+    }
+
+    const succeededByPath = new Map(
+      results
+        .filter((r) => r.success && r.newPath)
+        .map((r) => [r.path, r]),
+    );
+    const failed = results.filter((r) => !r.success);
+
+    if (succeededByPath.size === 0) {
+      get().pushToast({
+        title: `Could not move to ${displayLabel}`,
+        detail: failed[0]?.error || 'File move failed.',
+        kind: 'error',
+      });
+      return false;
+    }
+
+    const currentState = get();
+    const currentScopeIds = currentState.reviewScopeIds
+      ?? (currentState.reviewMode ? currentState.filteredVideos.map((v) => v.id) : null);
+
+    const movedFiles: NonNullable<UndoEntry['movedFiles']> = [];
+    const previousStatuses: Record<string, VideoStatus> = {};
+    const movedOldIds = new Set<string>();
+
+    const isDestInLoadedSession = (destFilePath: string): boolean => {
+      const destDir = destFilePath.slice(0, Math.max(destFilePath.lastIndexOf('/'), destFilePath.lastIndexOf('\\')));
+      return currentState.directories.some((root) => (
+        currentState.includeSubfolders
+          ? isPathInsideRoot(destFilePath, root)
+          : normalizeFolder(destDir) === normalizeFolder(root)
+      ));
+    };
+
+    const nextVideos: Video[] = [];
+    for (const video of currentState.videos) {
+      const moveResult = succeededByPath.get(video.path);
+      if (!moveResult || !moveResult.newPath) {
+        nextVideos.push(video);
+        continue;
+      }
+      movedOldIds.add(video.id);
+      previousStatuses[video.id] = video.status;
+      const scopeIdx = currentScopeIds ? currentScopeIds.indexOf(video.id) : -1;
+      movedFiles.push({
+        videoSnapshot: video,
+        fromPath: video.path,
+        toPath: moveResult.newPath,
+        newId: moveResult.newId ?? null,
+        wasInReviewScopeIndex: scopeIdx >= 0 ? scopeIdx : undefined,
+      });
+
+      if (isDestInLoadedSession(moveResult.newPath)) {
+        nextVideos.push({
+          ...video,
+          id: moveResult.newId || video.id,
+          path: moveResult.newPath,
+          status: 'keep',
+        });
+      }
+    }
+
+    const undoEntry: UndoEntry = {
+      videoId: movedFiles[0]!.videoSnapshot.id,
+      previousStatus: movedFiles[0]!.videoSnapshot.status,
+      previousIndex: currentState.reviewIndex,
+      videoIds: movedFiles.map((m) => m.videoSnapshot.id),
+      previousStatuses,
+      movedFiles,
+    };
+
+    const nextReviewScopeIds = currentScopeIds
+      ? currentScopeIds.filter((id) => !movedOldIds.has(id))
+      : null;
+    const nextReviewIndex = currentState.reviewMode && nextReviewScopeIds
+      ? Math.min(currentState.reviewIndex, nextReviewScopeIds.length)
+      : currentState.reviewIndex;
+
+    const remainingIds = new Set(nextVideos.map((v) => v.id));
+    const nextGridSelectionIds = new Set(
+      Array.from(currentState.gridSelectionIds).filter((id) => remainingIds.has(id) && !movedOldIds.has(id)),
+    );
+    const nextGridSelectionAnchorId = currentState.gridSelectionAnchorId && nextGridSelectionIds.has(currentState.gridSelectionAnchorId)
+      ? currentState.gridSelectionAnchorId
+      : null;
+
+    const stateAfter = { ...currentState, videos: nextVideos };
+    const filteredVideos = computeFiltered(stateAfter);
+    const activeReviewVideo = currentState.reviewMode
+      ? getVideoByReviewIndex(nextVideos, nextReviewScopeIds, filteredVideos, nextReviewIndex)
+      : null;
+
+    set({
+      videos: nextVideos,
+      filteredVideos,
+      stats: computeStats(nextVideos),
+      sidebarAggregates: computeSidebarAggregates(nextVideos),
+      undoStack: [...currentState.undoStack, undoEntry],
+      reviewIndex: nextReviewIndex,
+      reviewScopeIds: nextReviewScopeIds,
+      activeReviewVideoPath: currentState.reviewMode ? activeReviewVideo?.path ?? null : null,
+      gridSelectionIds: nextGridSelectionIds,
+      gridSelectionAnchorId: nextGridSelectionAnchorId,
+    });
+
+    get().pushToast({
+      title: `Moved to ${displayLabel} [${slot}]`,
+      detail: failed.length > 0
+        ? `${movedFiles.length} moved, ${failed.length} failed (${failed[0]?.error})`
+        : movedFiles.length === 1
+          ? movedFiles[0]!.videoSnapshot.filename
+          : `${movedFiles.length} files moved`,
+      kind: failed.length > 0 ? 'warning' : 'success',
+      actionLabel: 'Undo',
+      action: () => get().undo(),
+    });
+    return true;
+  },
+
   addBookmark: (videoId, time) => {
     const rounded = Math.round(time * 10) / 10;
     let updatedVideo: Video | null = null;
@@ -2171,6 +2480,7 @@ export const __test__ = {
 /** True when any grid filter narrows the loaded videos; matches what Clear all filters resets. */
 export function hasActiveFilters(state: VideoStore): boolean {
   return state.statusFilter !== 'all'
+    || state.mediaTypeFilter !== 'all'
     || Boolean(state.folderFilter)
     || state.favoritesFilter
     || state.incompatibleFilter
@@ -2196,6 +2506,7 @@ export function videosOutsideFolderFilter(state: VideoStore): Video[] {
     videos: state.videos,
     searchQuery: state.searchQuery,
     statusFilter: state.statusFilter,
+    mediaTypeFilter: state.mediaTypeFilter,
     minSizeFilter: state.minSizeFilter,
     maxSizeFilter: state.maxSizeFilter,
     minDurationFilter: state.minDurationFilter,

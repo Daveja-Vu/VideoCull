@@ -3,6 +3,7 @@ const fs = require('fs/promises');
 const os = require('os');
 const { processingPause } = require('./processing-pause');
 const mediaProcess = require('./media-process');
+const { isPhotoFile } = require('./scanner');
 const { createRunToken, cancelRun, toFfmpegInputPath } = mediaProcess;
 
 let thumbToken = null;
@@ -28,6 +29,15 @@ function parseBitrate(value) {
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
 }
 
+function parseCreationDateTag(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  const exifNormalized = trimmed.replace(/^(\d{4}):(\d{2}):(\d{2})\s+/, '$1-$2-$3T');
+  const parsed = new Date(exifNormalized).getTime();
+  if (!isNaN(parsed) && parsed !== 0) return parsed;
+  return null;
+}
+
 /**
  * Get duration, creation_time, codec, resolution, fps, and bitrate via ffprobe.
  */
@@ -36,45 +46,61 @@ async function getVideoMetadata(filePath, token = createRunToken()) {
   if (stat.size < 1) {
     throw new Error('Empty video file (0 bytes)');
   }
+  const isPhoto = isPhotoFile(filePath);
   const metadata = await mediaProcess.probe(filePath, token);
-  const duration = Number(metadata.format.duration) || 0;
-  const formatBitrate = parseBitrate(metadata.format.bit_rate);
-  const calculatedTotalBitrate = !formatBitrate && duration > 0 && stat.size
+  const duration = isPhoto ? 0 : (Number(metadata.format.duration) || 0);
+  const formatBitrate = isPhoto ? null : parseBitrate(metadata.format.bit_rate);
+  const calculatedTotalBitrate = !isPhoto && !formatBitrate && duration > 0 && stat.size
     ? Math.round((stat.size * 8) / duration)
     : null;
-  const totalBitrate = formatBitrate ?? calculatedTotalBitrate;
-  // Try to extract creation_time from format tags (camera date)
+  const totalBitrate = isPhoto ? null : (formatBitrate ?? calculatedTotalBitrate);
+  // Try to extract creation_time from format or stream tags (camera / EXIF date)
   let creationTime = null;
-  const tags = metadata.format.tags;
-  if (tags) {
-    const raw = tags.creation_time || tags.Creation_Time || tags.CREATION_TIME;
-    if (raw) {
-      const parsed = new Date(raw).getTime();
-      // FFmpeg 9 reports an unset ASF/WMV creation date as exactly 1970-01-01T00:00:00Z; that is
-      // "no date". Earlier dates are real (digitised footage) and stay.
-      if (!isNaN(parsed) && parsed !== 0) creationTime = parsed;
+  const streams = metadata.streams || [];
+  const videoStreams = streams.filter((stream) => stream.codec_type === 'video');
+  const nonAttachedVideoStreams = videoStreams.filter((stream) => !stream.disposition?.attached_pic);
+  const candidateVideoStreams = nonAttachedVideoStreams.length > 0 ? nonAttachedVideoStreams : videoStreams;
+  const videoStream = isPhoto && candidateVideoStreams.length > 1
+    ? candidateVideoStreams.reduce((best, stream) => (
+      ((stream.width || 0) * (stream.height || 0)) > ((best.width || 0) * (best.height || 0)) ? stream : best
+    ), candidateVideoStreams[0])
+    : candidateVideoStreams[0];
+  const audioStream = isPhoto ? null : streams.find((stream) => stream.codec_type === 'audio');
+  const tagSources = [metadata.format.tags, videoStream?.tags].filter(Boolean);
+  for (const tags of tagSources) {
+    const raw =
+      tags.creation_time ||
+      tags.Creation_Time ||
+      tags.CREATION_TIME ||
+      tags.DateTimeOriginal ||
+      tags.datetime ||
+      tags['com.apple.quicktime.creationdate'];
+    const parsed = parseCreationDateTag(raw);
+    if (parsed !== null) {
+      creationTime = parsed;
+      break;
     }
   }
 
-  const streams = metadata.streams;
-  const videoStream = streams.find((stream) => stream.codec_type === 'video');
-  const audioStream = streams.find((stream) => stream.codec_type === 'audio');
-  const audioBitrate = parseBitrate(audioStream?.bit_rate);
-  const parsedVideoBitrate = parseBitrate(videoStream?.bit_rate);
-  const derivedVideoBitrate = !parsedVideoBitrate && totalBitrate && audioBitrate
+  const audioBitrate = isPhoto ? null : parseBitrate(audioStream?.bit_rate);
+  const parsedVideoBitrate = isPhoto ? null : parseBitrate(videoStream?.bit_rate);
+  const derivedVideoBitrate = !isPhoto && !parsedVideoBitrate && totalBitrate && audioBitrate
     ? Math.max(0, totalBitrate - audioBitrate)
     : null;
-  const fps =
-    parseFpsRational(videoStream?.avg_frame_rate) ??
-    parseFpsRational(videoStream?.r_frame_rate) ??
-    null;
+  const fps = isPhoto
+    ? null
+    : (
+      parseFpsRational(videoStream?.avg_frame_rate) ??
+      parseFpsRational(videoStream?.r_frame_rate) ??
+      null
+    );
 
   return {
     duration,
     creationTime,
     videoCodec: videoStream?.codec_name ?? null,
     audioCodec: audioStream?.codec_name ?? null,
-    videoBitrate: parsedVideoBitrate ?? derivedVideoBitrate,
+    videoBitrate: isPhoto ? null : (parsedVideoBitrate ?? derivedVideoBitrate),
     audioBitrate,
     totalBitrate,
     containerFormat: metadata.format.format_name ?? null,
@@ -94,8 +120,8 @@ function mediaProbeOrNull(filePath, token) {
  * Calculate N evenly-spaced timestamps.
  * Handles very short videos gracefully.
  */
-function calculateTimestamps(duration, count, skipDelaySecs) {
-  if (duration <= 0) return [0];
+function calculateTimestamps(duration, count, skipDelaySecs, filePath) {
+  if (isPhotoFile(filePath) || duration <= 0) return [0];
 
   const start = skipDelaySecs;
   const end = duration * 0.97;
@@ -118,7 +144,8 @@ function calculateTimestamps(duration, count, skipDelaySecs) {
   return timestamps;
 }
 
-function expectedThumbnailCount(duration, count, skipDelaySecs) {
+function expectedThumbnailCount(duration, count, skipDelaySecs, filePath) {
+  if (isPhotoFile(filePath) || duration === 0) return 1;
   if (duration != null && duration > 0) {
     const end = duration * 0.97;
     if (duration < SINGLE_THUMBNAIL_VIDEO_DURATION_SECS || duration < skipDelaySecs || end <= skipDelaySecs) return 1;
@@ -224,9 +251,20 @@ function createQueueCursor(items) {
  * fluent-ffmpeg command builder produced.
  */
 function buildFrameArgs(videoPath, seekTime, outputPath, config) {
-  const args = ['-ss', String(seekTime)];
-  if (config.hardwareAccel) args.push('-hwaccel', 'auto');
-  args.push('-i', toFfmpegInputPath(videoPath), '-y', '-vframes', '1', '-filter:v', 'scale=320:-1', '-q:v', '5');
+  const isPhoto = isPhotoFile(videoPath);
+  const args = isPhoto ? [] : ['-ss', String(seekTime)];
+  if (config.hardwareAccel && !isPhoto) args.push('-hwaccel', 'auto');
+  args.push(
+    '-i',
+    toFfmpegInputPath(videoPath),
+    '-y',
+    '-vframes',
+    '1',
+    '-filter:v',
+    isPhoto ? "scale='min(1280,iw)':-1" : 'scale=320:-1',
+    '-q:v',
+    isPhoto ? '3' : '5',
+  );
   // Limit CPU threads to prevent massive spikes when processing parallel
   if (config.cpuThreadsLimited !== false) args.push('-threads', '1');
   args.push(outputPath);
@@ -248,13 +286,15 @@ function createExtractionBudget() {
  * once on a file usually hangs again at the next offset.
  */
 async function extractFrame(videoPath, timestamp, outputPath, config, token, budget) {
-  const attempts = Array.from(new Set([
-    timestamp,
-    Math.max(0, timestamp + 0.25),
-    Math.max(0, timestamp - 0.25),
-    Math.max(0, timestamp + 0.75),
-    Math.max(0, timestamp - 0.75),
-  ]));
+  const attempts = isPhotoFile(videoPath)
+    ? [0]
+    : Array.from(new Set([
+      timestamp,
+      Math.max(0, timestamp + 0.25),
+      Math.max(0, timestamp - 0.25),
+      Math.max(0, timestamp + 0.75),
+      Math.max(0, timestamp - 0.75),
+    ]));
 
   for (let attemptIndex = 0; ; attemptIndex++) {
     if (token.cancelled) throw new Error('Cancelled');
@@ -305,7 +345,7 @@ async function generateThumbnailsForVideo(video, thumbDir, config, token, option
   try {
     const existing = await fs.readdir(videoThumbDir);
     if (!options.forceRegenerate) {
-      const expectedCount = expectedThumbnailCount(duration, THUMB_COUNT, skipDelay);
+      const expectedCount = expectedThumbnailCount(duration, THUMB_COUNT, skipDelay, video.path);
       const reusablePaths = await getReusableThumbnailPaths(existing, videoThumbDir, expectedCount);
       if (reusablePaths && await thumbnailsMatchSource(video, videoThumbDir, reusablePaths)) {
         await fs.writeFile(path.join(videoThumbDir, THUMB_SOURCE_MARKER), `${video.sizeBytes}:${video.date}`).catch(() => {});
@@ -344,7 +384,7 @@ async function generateThumbnailsForVideo(video, thumbDir, config, token, option
     }
   }
 
-  const timestamps = calculateTimestamps(duration, THUMB_COUNT, skipDelay);
+  const timestamps = calculateTimestamps(duration, THUMB_COUNT, skipDelay, video.path);
   const thumbnails = [];
   const budget = createExtractionBudget();
 

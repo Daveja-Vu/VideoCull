@@ -161,6 +161,30 @@ export interface DeleteResult {
   removedFolder?: string;
 }
 
+export interface MoveVideoResult {
+  path: string;
+  newPath?: string;
+  newId?: string | null;
+  success: boolean;
+  error?: string;
+}
+
+export interface RestoreMovedVideoResult {
+  path: string;
+  fromPath: string;
+  success: boolean;
+  error?: string;
+}
+
+export type FolderHotkeySlot = '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0';
+
+export const FOLDER_HOTKEY_SLOTS: readonly FolderHotkeySlot[] = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+
+export interface FolderHotkeyConfig {
+  folderPath: string;
+  label?: string;
+}
+
 // ── Statistics ─────────────────────────────────────────────────────
 export interface VideoStats {
   total: number;
@@ -212,9 +236,12 @@ export type MenuAction =
   | `sort:${SortField}` | `sort-order:${SortOrder}` | `open-recent:${string}` | `reveal-folder:${string}` | `remove-folder:${string}`;
 
 export type SortField = 'name' | 'size' | 'duration' | 'date' | 'rating' | 'resolution' | 'fps';
+export type PhotoSortField = 'name' | 'size' | 'resolution' | 'date' | 'rating';
 export type FolderSortField = 'name' | 'size';
 export type SortOrder = 'asc' | 'desc';
 export type StatusFilter = 'all' | VideoStatus;
+export type MediaTypeFilter = 'all' | 'videos' | 'photos';
+export type MediaMode = 'videos' | 'photos' | 'both';
 export type RatingFilter = 0 | 1 | 2 | 3 | 4 | 5;
 export type CacheLocationMode = 'centralised' | 'per-drive' | 'distributed';
 export type DuplicateMatchType = 'exact' | 'phash' | 'visual' | 'mixed' | null;
@@ -310,6 +337,13 @@ export interface UndoEntry {
   previousIndex: number;
   videoIds?: string[];
   previousStatuses?: Record<string, VideoStatus>;
+  movedFiles?: Array<{
+    videoSnapshot: Video;
+    fromPath: string;
+    toPath: string;
+    newId?: string | null;
+    wasInReviewScopeIndex?: number;
+  }>;
 }
 
 // ── Settings ───────────────────────────────────────────────────────
@@ -354,10 +388,12 @@ export interface AppSettings {
   /** Newest first. */
   recentSessions: RecentSession[];
   reopenLastSession: boolean;
+  rememberWindowSize: boolean;
   autoUpdates: boolean;
   globalMute: boolean;
   features: FeatureSettings;
   duplicates: DuplicateSettings;
+  folderHotkeys: Partial<Record<FolderHotkeySlot, FolderHotkeyConfig>>;
   // Review mode — context-independent
   keyKeep: Keybind;
   keyDelete: Keybind;
@@ -390,6 +426,7 @@ export interface VideoStore {
   directory: string | null;
   directories: string[];
   includeSubfolders: boolean;
+  mediaMode: MediaMode;
 
   // Videos
   videos: Video[];
@@ -407,8 +444,11 @@ export interface VideoStore {
   // Filters & Sort
   searchQuery: string;
   statusFilter: StatusFilter;
+  mediaTypeFilter: MediaTypeFilter;
   sortBy: SortField;
   sortOrder: SortOrder;
+  photoSortBy: PhotoSortField;
+  photoSortOrder: SortOrder;
   minSizeFilter: number;
   maxSizeFilter: number | null;
   minDurationFilter: number;
@@ -486,14 +526,18 @@ export interface VideoStore {
   /** Records which folders could and could not be reached, for the recent-session lists. */
   markFolderReachability: (reachable: string[], missing: string[]) => void;
   setIncludeSubfolders: (val: boolean) => void;
+  setMediaMode: (mode: MediaMode) => void;
   setVideos: (videos: Video[]) => void;
   updateVideoThumbnailsBatch: (batch: ThumbReadyEvent[]) => void;
   setVideoStatus: (videoId: string, status: VideoStatus) => void;
   undo: () => void;
   setSearchQuery: (query: string) => void;
   setStatusFilter: (filter: StatusFilter) => void;
+  setMediaTypeFilter: (filter: MediaTypeFilter) => void;
   setSortBy: (sortBy: SortField) => void;
   setSortOrder: (sortOrder: SortOrder) => void;
+  setPhotoSortBy: (sortBy: PhotoSortField) => void;
+  setPhotoSortOrder: (sortOrder: SortOrder) => void;
   setMinSizeFilter: (minSize: number) => void;
   setSizeFilterRange: (minSize: number, maxSize: number | null) => void;
   setMinDurationFilter: (seconds: number) => void;
@@ -549,6 +593,7 @@ export interface VideoStore {
   setCardScale: (scale: number) => void;
   advanceReview: () => void;
   removeDeletedVideos: (deletedPaths: string[]) => void;
+  moveVideosToHotkeyFolder: (slot: FolderHotkeySlot, videoIds?: string[]) => Promise<boolean>;
   addBookmark: (videoId: string, time: number) => void;
   removeBookmark: (videoId: string, time: number) => void;
   clearRecentSessions: () => void;
@@ -720,7 +765,7 @@ export interface ElectronAPI {
   validateDroppedPath: (droppedPath: string) => Promise<{ valid: boolean; isDirectory: boolean }>;
   /** Resolves false when the path was refused or could not be shown. */
   openInExplorer: (filePath: string) => Promise<boolean>;
-  scanDirectory: (dirPath: string, includeSubfolders: boolean) => Promise<ScanDirectoryResult>;
+  scanDirectory: (dirPath: string, includeSubfolders: boolean, options?: { mediaMode?: MediaMode }) => Promise<ScanDirectoryResult>;
   resetLoadedDirectories: () => Promise<boolean>;
   /** Unloads one of several loaded folders without a rescan; false when main refused. */
   unloadDirectory: (dirPath: string) => Promise<boolean>;
@@ -748,6 +793,8 @@ export interface ElectronAPI {
   clearCache: (dirPath: string) => Promise<boolean>;
   batchDelete: (filePaths: string[]) => Promise<DeleteResult[]>;
   permanentlyDelete: (filePaths: string[]) => Promise<DeleteResult[]>;
+  moveVideosToFolder: (filePaths: string[], targetFolder: string) => Promise<MoveVideoResult[]>;
+  restoreMovedVideos: (moves: Array<{ fromPath: string; toPath: string }>) => Promise<RestoreMovedVideoResult[]>;
   exportReport: (videos: Video[], dirPaths: string[]) => Promise<'saved' | 'cancelled' | 'error'>;
   chooseReportScope: () => Promise<'all' | 'filtered' | null>;
   setMenuState: (state: AppMenuState) => void;

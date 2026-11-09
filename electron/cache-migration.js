@@ -103,6 +103,7 @@ async function migrateCacheMoves(moves, options = {}) {
 
 module.exports = {
   migrateCacheMoves,
+  pathExists,
   __test__: {
     copySourceToStage,
     pathExists,

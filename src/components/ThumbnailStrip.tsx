@@ -6,26 +6,39 @@ interface ThumbnailStripProps {
   thumbnails: string[];
   osThumbnail?: string | null;
   compact?: boolean;
+  onThumbClick?: (index: number) => void;
+  getThumbTitle?: (index: number) => string | undefined;
 }
 
-export default function ThumbnailStrip({ thumbnails, osThumbnail, compact = false }: ThumbnailStripProps) {
+export default function ThumbnailStrip({
+  thumbnails,
+  osThumbnail,
+  compact = false,
+  onThumbClick,
+  getThumbTitle,
+}: ThumbnailStripProps) {
   if (!thumbnails || thumbnails.length === 0) {
     if (osThumbnail) {
       return (
         <div className={`thumb-strip ${compact ? 'thumb-strip-compact' : ''}`}>
           <img
-            className="thumb-img thumb-img-os thumb-img-loaded"
+            className={`thumb-img thumb-img-os thumb-img-loaded ${onThumbClick ? 'thumb-img-interactive' : ''}`}
             src={osThumbnail}
             decoding="async"
             draggable={false}
             alt="OS Preview"
+            title={getThumbTitle?.(0)}
+            onClick={onThumbClick ? () => onThumbClick(0) : undefined}
             style={{ gridColumn: 'span 3', gridRow: 'span 2', objectFit: 'cover' }}
           />
         </div>
       );
     }
     return (
-      <div className={`thumb-strip thumb-strip-placeholder ${compact ? 'thumb-strip-compact' : ''}`}>
+      <div
+        className={`thumb-strip thumb-strip-placeholder ${compact ? 'thumb-strip-compact' : ''} ${onThumbClick ? 'thumb-img-interactive' : ''}`}
+        onClick={onThumbClick ? () => onThumbClick(0) : undefined}
+      >
         <div className="thumb-placeholder-pulse" />
       </div>
     );
@@ -43,13 +56,25 @@ export default function ThumbnailStrip({ thumbnails, osThumbnail, compact = fals
           key={thumb}
           src={`thumb://local/${encodeURIComponent(thumb)}`}
           alt={`Frame ${i + 1}`}
+          title={getThumbTitle?.(i)}
+          onClick={onThumbClick ? () => onThumbClick(i) : undefined}
         />
       ))}
     </div>
   );
 }
 
-function FadingThumbImage({ src, alt }: { src: string; alt: string }) {
+function FadingThumbImage({
+  src,
+  alt,
+  title,
+  onClick,
+}: {
+  src: string;
+  alt: string;
+  title?: string;
+  onClick?: () => void;
+}) {
   const [loaded, setLoaded] = useState(false);
   const imageRef = useRef<HTMLImageElement>(null);
 
@@ -63,11 +88,13 @@ function FadingThumbImage({ src, alt }: { src: string; alt: string }) {
   return (
     <img
       ref={imageRef}
-      className={`thumb-img ${loaded ? 'thumb-img-loaded' : ''}`}
+      className={`thumb-img ${loaded ? 'thumb-img-loaded' : ''} ${onClick ? 'thumb-img-interactive' : ''}`}
       src={src}
       decoding="async"
       alt={alt}
+      title={title}
       draggable={false}
+      onClick={onClick}
       onLoad={() => setLoaded(true)}
     />
   );

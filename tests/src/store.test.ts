@@ -1,18 +1,19 @@
-import { __test__ } from '../../src/store';
+import useStore, { __test__ } from '../../src/store';
 import type { VideoStore } from '../../src/types';
 import { makeDuplicateGroup as makeGroup, makeVideo } from '../helpers/videoFactory';
 
 type FilterState = Pick<VideoStore,
-  'videos' | 'searchQuery' | 'statusFilter' | 'minSizeFilter' | 'maxSizeFilter' | 'minDurationFilter' | 'maxDurationFilter' |
+  'videos' | 'searchQuery' | 'statusFilter' | 'mediaTypeFilter' | 'minSizeFilter' | 'maxSizeFilter' | 'minDurationFilter' | 'maxDurationFilter' |
   'folderFilter' | 'minRatingFilter' | 'favoritesFilter' | 'incompatibleFilter' | 'duplicateFilter' |
   'sortBy' | 'sortOrder' | 'groupByFolder' | 'folderSortBy' | 'folderSortOrder'
->;
+> & Partial<Pick<VideoStore, 'photoSortBy' | 'photoSortOrder'>>;
 
 function makeFilterState(overrides: Partial<FilterState> = {}): FilterState {
   return {
     videos: [],
     searchQuery: '',
     statusFilter: 'all',
+    mediaTypeFilter: 'all',
     minSizeFilter: 0,
     maxSizeFilter: null,
     minDurationFilter: 0,
@@ -127,6 +128,26 @@ describe('store filtering and grouping behavior', () => {
     );
 
     expect(filtered.map((video) => video.id)).toEqual(['432p-classic', '400p-wide', '352p-extra-wide']);
+  });
+
+  test('sorts photos by photoSortBy and compares photo resolution by exact pixel count', () => {
+    const videos = [
+      makeVideo('square-5mp', { width: 2400, height: 2400, path: 'C:\\one\\a.jpg', filename: 'a.jpg' }),
+      makeVideo('wide-2mp', { width: 2560, height: 1000, path: 'C:\\one\\b.png', filename: 'b.png' }),
+      makeVideo('clip', { width: 1920, height: 1080, path: 'C:\\one\\c.mp4', filename: 'c.mp4' }),
+    ];
+
+    const filtered = __test__.computeFiltered(
+      makeFilterState({
+        videos,
+        sortBy: 'name',
+        sortOrder: 'asc',
+        photoSortBy: 'resolution',
+        photoSortOrder: 'desc',
+      })
+    );
+
+    expect(filtered.map((video) => video.id)).toEqual(['clip', 'square-5mp', 'wide-2mp']);
   });
 });
 
@@ -334,4 +355,105 @@ test('the title bar path filter keeps a folder and everything below it, not fold
   const onRoot = [makeVideo('root', {}, 'P:'), ...videos];
   expect(__test__.computeFiltered(makeFilterState({ videos: onRoot, folderFilter: { path: 'P:\\', includeSubfolders: false } }))
     .map((video) => video.id)).toEqual(['root']);
+});
+
+test('mediaTypeFilter filters videos and photos accurately', () => {
+  const items = [
+    makeVideo('vid1', { filename: 'clip.mp4', path: '/media/clip.mp4' }),
+    makeVideo('img1', { filename: 'portrait.jpg', path: '/media/portrait.jpg', durationSecs: 0 }),
+    makeVideo('img2', { filename: 'pet.heic', path: '/media/pet.heic', durationSecs: 0 }),
+  ];
+
+  expect(__test__.computeFiltered(makeFilterState({ videos: items, mediaTypeFilter: 'all' })).map((v) => v.id))
+    .toEqual(['vid1', 'img2', 'img1']);
+  expect(__test__.computeFiltered(makeFilterState({ videos: items, mediaTypeFilter: 'photos' })).map((v) => v.id))
+    .toEqual(['img2', 'img1']);
+  expect(__test__.computeFiltered(makeFilterState({ videos: items, mediaTypeFilter: 'videos' })).map((v) => v.id))
+    .toEqual(['vid1']);
+});
+
+test('moveVideosToHotkeyFolder moves active review item and undo restores it', async () => {
+  const moveCalls: Array<{ filePaths: string[]; targetFolder: string }> = [];
+  const restoreCalls: Array<Array<{ fromPath: string; toPath: string }>> = [];
+
+  vi.stubGlobal('window', {
+    electronAPI: {
+      platform: 'darwin',
+      moveVideosToFolder: async (filePaths: string[], targetFolder: string) => {
+        moveCalls.push({ filePaths, targetFolder });
+        return filePaths.map((p) => ({
+          path: p,
+          newPath: `${targetFolder}/${p.split('/').pop()}`,
+          newId: 'moved-id-1',
+          success: true,
+        }));
+      },
+      restoreMovedVideos: async (moves: Array<{ fromPath: string; toPath: string }>) => {
+        restoreCalls.push(moves);
+        return moves.map((m) => ({ path: m.toPath, fromPath: m.fromPath, success: true }));
+      },
+      saveConfig: async () => true,
+    },
+  });
+
+  try {
+    const img1 = makeVideo('img1', { filename: 'portrait.jpg', path: '/session/portrait.jpg', durationSecs: 0 });
+    const img2 = makeVideo('img2', { filename: 'pet.jpg', path: '/session/pet.jpg', durationSecs: 0 });
+    useStore.setState({
+      directory: '/session',
+      directories: ['/session'],
+      includeSubfolders: false,
+      videos: [img1, img2],
+      filteredVideos: [img1, img2],
+      reviewMode: true,
+      reviewIndex: 0,
+      reviewScopeIds: ['img1', 'img2'],
+      undoStack: [],
+      settings: {
+        ...useStore.getState().settings,
+        folderHotkeys: {
+          '1': { folderPath: '/Portraits', label: 'Portraits' },
+        },
+      },
+    });
+
+    const moved = await useStore.getState().moveVideosToHotkeyFolder('1', ['img1']);
+    expect(moved).toBe(true);
+    expect(moveCalls).toEqual([{ filePaths: ['/session/portrait.jpg'], targetFolder: '/Portraits' }]);
+    expect(useStore.getState().videos.map((v) => v.id)).toEqual(['img2']);
+    expect(useStore.getState().reviewScopeIds).toEqual(['img2']);
+    expect(useStore.getState().reviewIndex).toBe(0);
+
+    useStore.getState().undo();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(restoreCalls).toEqual([[{ fromPath: '/session/portrait.jpg', toPath: '/Portraits/portrait.jpg' }]]);
+    expect(useStore.getState().videos.map((v) => v.id).sort()).toEqual(['img1', 'img2']);
+    expect(useStore.getState().reviewScopeIds).toEqual(['img1', 'img2']);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test('setMediaMode switches between videos only, photos only, and both', () => {
+  const vid = makeVideo('vid1', { filename: 'clip.mp4', path: '/session/clip.mp4' });
+  const img = makeVideo('img1', { filename: 'photo.jpg', path: '/session/photo.jpg', durationSecs: 0 });
+  useStore.setState({
+    mediaMode: 'both',
+    mediaTypeFilter: 'all',
+    videos: [vid, img],
+    filteredVideos: [vid, img],
+  });
+
+  useStore.getState().setMediaMode('videos');
+  expect(useStore.getState().mediaMode).toBe('videos');
+  expect(useStore.getState().filteredVideos.map((v) => v.id)).toEqual(['vid1']);
+
+  useStore.getState().setMediaMode('photos');
+  expect(useStore.getState().mediaMode).toBe('photos');
+  expect(useStore.getState().filteredVideos.map((v) => v.id)).toEqual(['img1']);
+
+  useStore.getState().setMediaMode('both');
+  expect(useStore.getState().mediaMode).toBe('both');
+  expect(useStore.getState().filteredVideos.map((v) => v.id)).toEqual(['vid1', 'img1']);
 });

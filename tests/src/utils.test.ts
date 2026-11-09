@@ -4,12 +4,14 @@ import {
   foldPathCase,
   modKeyName,
   calcThumbGrid,
+  calculateThumbnailTimestamps,
   describeThumbnailWork,
   detectVideoCompatibility,
   formatCodecLabel,
   formatDeleteConfirmation,
   formatDuration,
   formatFps,
+  formatMediaCountSummary,
   isFolderShownByFilter,
   formatRecentPath,
   formatRelativeTime,
@@ -52,6 +54,8 @@ test('thumbnail grid layout matches common thumbnail counts', () => {
   expect(calcThumbGrid(1)).toEqual({ cols: 1, rows: 1 });
   expect(calcThumbGrid(6)).toEqual({ cols: 3, rows: 2 });
   expect(calcThumbGrid(5)).toEqual({ cols: 3, rows: 2 });
+  expect(calculateThumbnailTimestamps(60, 6, 3)).toEqual([7.6, 16.8, 26, 35.2, 44.4, 53.6]);
+  expect(calculateThumbnailTimestamps(60, 1, 3)).toEqual([0]);
 });
 
 test('web support and compatibility detection match supported and unsupported formats', () => {
@@ -80,12 +84,17 @@ test('codec, resolution, and fps labels are formatted for display', () => {
   expect(formatCodecLabel('h264')).toBe('H.264');
   expect(formatCodecLabel('xvid')).toBe('XVID');
   expect(formatCodecLabel(null)).toBe('');
+  expect(formatCodecLabel('mjpeg', 'D:\\Photos\\shot.png')).toBe('PNG');
+  expect(formatCodecLabel('hevc', 'D:\\Photos\\shot.heic')).toBe('HEIC');
+  expect(formatCodecLabel('av1', 'D:\\Photos\\shot.avif')).toBe('AVIF');
   expect(formatResolutionLabel(3840, 2160)).toBe('4K');
   expect(formatResolutionLabel(2560, 1440)).toBe('1440p');
   expect(formatResolutionLabel(1920, 1080)).toBe('1080p');
   expect(formatResolutionLabel(1080, 1920)).toBe('1080p');
   expect(formatResolutionLabel(854, 480)).toBe('480p');
   expect(formatResolutionLabel(null, 480)).toBe('');
+  expect(formatResolutionLabel(4032, 3024, true)).toBe('12 MP');
+  expect(formatResolutionLabel(1600, 1200, true)).toBe('1.9 MP');
   expect(formatFps(30)).toBe('30fps');
   expect(formatFps(29.97)).toBe('29.97fps');
   expect(formatFps(null)).toBe('');
@@ -139,4 +148,17 @@ test('describeThumbnailWork only calls it a rebuild when videos already had thum
   expect(describeThumbnailWork(0, 2, 12)).toBe('2 videos were rebuilt to 12 frames.');
   expect(describeThumbnailWork(0, 1, 5)).toBe('1 video was rebuilt to 5 frames.');
   expect(describeThumbnailWork(4, 2, 12)).toBe('2 videos were rebuilt to 12 frames and 4 videos got new thumbnails.');
+});
+
+test('formatMediaCountSummary formats photo-only, video-only, and mixed media counts', () => {
+  const photos = [{ path: 'a.jpg' }, { path: 'b.png' }];
+  const videos = [{ path: 'c.mp4' }, { path: 'd.mov' }];
+  const mixed = [...photos, ...videos];
+
+  expect(formatMediaCountSummary(videos)).toBe('2 videos');
+  expect(formatMediaCountSummary([videos[0]], videos)).toBe('1 of 2 videos');
+  expect(formatMediaCountSummary(photos)).toBe('2 Photos');
+  expect(formatMediaCountSummary([photos[0]], photos)).toBe('1 of 2 Photos');
+  expect(formatMediaCountSummary(mixed)).toBe('2 Photos, 2 Videos');
+  expect(formatMediaCountSummary([photos[0], videos[0]], mixed)).toBe('1 Photo, 1 Video (2 of 4)');
 });

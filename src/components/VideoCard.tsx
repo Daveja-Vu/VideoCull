@@ -2,8 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import type { Video } from '../types';
 import useStore from '../store';
 import ThumbnailStrip from './ThumbnailStrip';
-import { formatSize, formatDuration, formatCodecLabel, formatFps, formatResolutionLabel, isWebSupported, modKeyName } from '../utils';
-import { Check, SkipForward, Square, CheckSquare, Trash2, Play, Heart, Star } from 'lucide-react';
+import { formatSize, formatDuration, formatCodecLabel, formatFps, formatResolutionLabel, isPhotoPath, isWebSupported, modKeyName } from '../utils';
+import { Check, SkipForward, Square, CheckSquare, Trash2, Play, Maximize2, Heart, Star } from 'lucide-react';
 import './VideoCard.css';
 import { openVideoExternally } from '../appCommands';
 
@@ -62,11 +62,12 @@ export default function VideoCard({ video, style, isSelected = false, showSelect
     setVideoStatus(video.id, video.status === 'delete' ? 'pending' : 'delete');
   };
 
-  const isWeb = isWebSupported(video.path);
+  const isPhoto = isPhotoPath(video.path);
+  const isWeb = isPhoto || isWebSupported(video.path);
   const canPlayInReview = isWeb && (!features.compatibilityCheck || video.compatible !== false);
-  const resolutionLabel = formatResolutionLabel(video.width, video.height);
-  const codecLabel = formatCodecLabel(video.videoCodec);
-  const fpsLabel = formatFps(video.fps);
+  const resolutionLabel = formatResolutionLabel(video.width, video.height, isPhoto);
+  const codecLabel = formatCodecLabel(video.videoCodec, video.path);
+  const fpsLabel = isPhoto ? '' : formatFps(video.fps);
 
   const handleFavorite = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -146,9 +147,9 @@ export default function VideoCard({ video, style, isSelected = false, showSelect
           <button 
             className="card-action-btn card-play-btn" 
             onClick={handlePlay} 
-            title={canPlayInReview ? `Play in review mode (${modKeyName()}+Click for external player)` : "Open in external player"}
+            title={isPhoto ? `View in review mode (${modKeyName()}+Click for external viewer)` : (canPlayInReview ? `Play in review mode (${modKeyName()}+Click for external player)` : "Open in external player")}
           >
-            <Play size={20} />
+            {isPhoto ? <Maximize2 size={18} /> : <Play size={20} />}
           </button>
         </div>
       </div>
@@ -160,7 +161,7 @@ export default function VideoCard({ video, style, isSelected = false, showSelect
         <div className="card-meta">
           <span>{formatSize(video.sizeBytes)}</span>
           <span className="meta-sep">•</span>
-          <span>{formatDuration(video.durationSecs)}</span>
+          <span>{isPhoto ? (video.width && video.height ? `${video.width}×${video.height}` : 'Photo') : formatDuration(video.durationSecs)}</span>
         </div>
         {features.codecBadges && (resolutionLabel || codecLabel || fpsLabel) && (
           <div className="card-badges">

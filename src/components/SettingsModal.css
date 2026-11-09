@@ -518,6 +518,103 @@ input[type="range"] {
   margin-right: auto;
 }
 
+.folder-hotkeys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.folder-hotkey-row {
+  display: grid;
+  grid-template-columns: 28px 150px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+}
+
+.folder-hotkey-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  background: var(--bg-app);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  font-family: 'Inter', monospace;
+}
+
+.folder-hotkey-label-input {
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.folder-hotkey-label-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.folder-hotkey-path {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-hotkey-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-browse-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-app);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.btn-browse-folder:hover {
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+  background: var(--bg-surface-hover);
+}
+
+.btn-clear-folder-hotkey {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-app);
+  color: var(--text-tertiary);
+}
+
+.btn-clear-folder-hotkey:hover {
+  color: var(--color-delete);
+  border-color: var(--color-delete);
+}
+
 .btn-cancel,
 .btn-save {
   padding: 8px 16px;

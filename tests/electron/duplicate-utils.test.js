@@ -242,3 +242,21 @@ test('fingerprints made with the 2018 FFmpeg build are not reused', () => {
   // Stored rows carry the key they were made with; only matching rows are loaded.
   assert.match(getDuplicateFingerprintKey({}), /^gray32-v2\|/);
 });
+
+test('photo keeper ordering compares exact pixel resolution within the same video tier', () => {
+  const smallerPhoto = {
+    id: 'photo-8mp',
+    path: 'P:\\photo-8mp.jpg',
+    width: 3840,
+    height: 2160,
+    sizeBytes: 5_000_000,
+  };
+  const largerPhoto = {
+    id: 'photo-12mp',
+    path: 'P:\\photo-12mp.jpg',
+    width: 4032,
+    height: 3024,
+    sizeBytes: 3_000_000,
+  };
+  assert.equal(chooseSuggestedKeeper([smallerPhoto, largerPhoto], normalizeDuplicateSettings({}))?.id, 'photo-12mp');
+});

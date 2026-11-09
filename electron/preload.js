@@ -33,8 +33,8 @@ const electronAPI = {
   openInExplorer: (filePath) => ipcRenderer.invoke('open-in-explorer', filePath),
 
   // Scanning
-  scanDirectory: (dirPath, includeSubfolders) =>
-    ipcRenderer.invoke('scan-directory', dirPath, includeSubfolders),
+  scanDirectory: (dirPath, includeSubfolders, options) =>
+    ipcRenderer.invoke('scan-directory', dirPath, includeSubfolders, options),
   resetLoadedDirectories: () => ipcRenderer.invoke('reset-loaded-directories'),
   unloadDirectory: (dirPath) => ipcRenderer.invoke('unload-directory', dirPath),
   onScanProgress: (callback) => subscribe('scan-progress', callback),
@@ -96,6 +96,8 @@ const electronAPI = {
   // Actions
   batchDelete: (filePaths) => ipcRenderer.invoke('batch-delete', filePaths),
   permanentlyDelete: (filePaths) => ipcRenderer.invoke('permanently-delete', filePaths),
+  moveVideosToFolder: (filePaths, targetFolder) => ipcRenderer.invoke('move-videos-to-folder', filePaths, targetFolder),
+  restoreMovedVideos: (moves) => ipcRenderer.invoke('restore-moved-videos', moves),
   exportReport: (videos, dirPaths) => ipcRenderer.invoke('export-report', videos, dirPaths),
   chooseReportScope: () => ipcRenderer.invoke('choose-report-scope'),
   setMenuState: (state) => ipcRenderer.send('set-menu-state', state),

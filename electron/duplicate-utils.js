@@ -296,6 +296,20 @@ function resolutionDisplayTier(video) {
   return shortestEdge;
 }
 
+const PHOTO_EXT_RE = /\.(?:jpg|jpeg|png|webp|heic|avif|gif|bmp|tiff)$/i;
+
+function isPhotoCandidate(video) {
+  return PHOTO_EXT_RE.test(String(video?.path ?? video?.filename ?? ''));
+}
+
+function resolutionScore(video) {
+  const width = finiteNumber(video.width);
+  const height = finiteNumber(video.height);
+  if (width <= 0 || height <= 0) return 0;
+  if (isPhotoCandidate(video)) return width * height;
+  return resolutionDisplayTier(video);
+}
+
 // ffprobe names other than the family keys in codecOrder. SYNC NOTE: mirrored in src/store.ts.
 const CODEC_ALIASES = { h265: 'hevc', wmv1: 'vc1', wmv2: 'vc1', wmv3: 'vc1' };
 
@@ -307,9 +321,14 @@ function codecPreferenceScore(video, codecOrder) {
 }
 
 function compareKeeperCandidates(a, b, order, codecOrder = DEFAULT_DUPLICATE_SETTINGS.codecOrder) {
+  const comparePhotoPixels = isPhotoCandidate(a) || isPhotoCandidate(b);
   for (const rule of order) {
     let diff = 0;
-    if (rule === 'resolution') diff = resolutionDisplayTier(a) - resolutionDisplayTier(b);
+    if (rule === 'resolution') {
+      diff = comparePhotoPixels
+        ? (finiteNumber(a.width) * finiteNumber(a.height)) - (finiteNumber(b.width) * finiteNumber(b.height))
+        : resolutionScore(a) - resolutionScore(b);
+    }
     else if (rule === 'videoBitrate') diff = finiteNumber(a.videoBitrate ?? a.totalBitrate) - finiteNumber(b.videoBitrate ?? b.totalBitrate);
     else if (rule === 'duration') diff = finiteNumber(a.durationSecs) - finiteNumber(b.durationSecs);
     else if (rule === 'fps') diff = finiteNumber(a.fps) - finiteNumber(b.fps);

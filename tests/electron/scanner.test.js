@@ -261,3 +261,30 @@ test('scanDirectory aborts when the cancellation guard throws', async () => {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('scanDirectory discovers photo files with durationSecs initialized to 0', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'videocull-scan-photos-'));
+
+  try {
+    await fs.writeFile(path.join(tempRoot, 'portrait.jpg'), 'fake-jpg');
+    await fs.writeFile(path.join(tempRoot, 'pet.png'), 'fake-png');
+    await fs.writeFile(path.join(tempRoot, 'clip.mp4'), 'fake-mp4');
+    await fs.writeFile(path.join(tempRoot, 'notes.txt'), 'ignored');
+
+    const videos = await scanDirectory(tempRoot, false);
+    const byName = new Map(videos.map((v) => [v.filename, v]));
+
+    assert.equal(videos.length, 3);
+    assert.equal(byName.get('portrait.jpg').durationSecs, 0);
+    assert.equal(byName.get('pet.png').durationSecs, 0);
+    assert.equal(byName.get('clip.mp4').durationSecs, null);
+
+    const videosOnly = await scanDirectory(tempRoot, false, undefined, { mediaMode: 'videos' });
+    assert.deepEqual(videosOnly.map((v) => v.filename), ['clip.mp4']);
+
+    const photosOnly = await scanDirectory(tempRoot, false, undefined, { mediaMode: 'photos' });
+    assert.deepEqual(photosOnly.map((v) => v.filename).sort(), ['pet.png', 'portrait.jpg']);
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { ColorTheme, DuplicateSortField, RecentSession, StatusFilter, ToastInput, ToastKind } from '../types';
+import type { ColorTheme, DuplicateSortField, MediaMode, PhotoSortField, RecentSession, StatusFilter, ToastInput, ToastKind } from '../types';
 import type { SortField } from '../types';
 import useStore, { DUPLICATE_METHOD_NAMES, otherDuplicateMethod } from '../store';
 import { beginDevInteraction } from '../perf-dev';
@@ -20,7 +20,7 @@ import videoCullLogo from '../assets/videocull-logo.png';
 import {
   FolderOpen, Folder, RefreshCw, Play, Trash2, Filter,
   ArrowUpDown, X, Maximize2, Settings, ChevronDown,
-  Heart, Star, AlertTriangle, Volume2, VolumeX, CopyCheck, Grid3X3, List, CircleHelp, Moon, Sun, History, FolderPlus, FolderMinus
+  Heart, Star, AlertTriangle, Volume2, VolumeX, CopyCheck, Grid3X3, List, CircleHelp, Moon, Sun, History, FolderPlus, FolderMinus, Film, Image, Layers
 } from 'lucide-react';
 import './Sidebar.css';
 
@@ -338,6 +338,9 @@ function SidebarFiltersSection({
   onToggleFilters: () => void;
 }) {
   const statusFilter = useStore((s) => s.statusFilter);
+  const mediaMode = useStore((s) => s.mediaMode);
+  const mediaTypeFilter = useStore((s) => s.mediaTypeFilter);
+  const setMediaTypeFilter = useStore((s) => s.setMediaTypeFilter);
   const folderFilter = useStore((s) => s.folderFilter);
   const setFolderFilter = useStore((s) => s.setFolderFilter);
   const minSizeFilter = useStore((s) => s.minSizeFilter);
@@ -403,7 +406,7 @@ function SidebarFiltersSection({
   const duplicateCount = sidebarAggregates.duplicateCount;
   const incompatibleCount = sidebarAggregates.incompatibleCount;
   const hasIncompatibleVideos = incompatibleCount > 0;
-  const hasExtraFilter = favoritesFilter || incompatibleFilter || duplicateFilter;
+  const hasExtraFilter = favoritesFilter || incompatibleFilter || duplicateFilter || mediaTypeFilter !== 'all';
   const hasAnyFilter = statusFilter !== 'all' || Boolean(folderFilter) || hasExtraFilter || hasRatingFilter || hasSizeFilter || hasDurationFilter;
   const filteredSummary = `${filteredVideoCount} / ${videoCount}`;
 
@@ -474,6 +477,38 @@ function SidebarFiltersSection({
 
       {showFilters && (
         <div className="sidebar-section-content">
+          {mediaMode === 'both' && (
+            <div className="filter-field">
+              <div className="filter-field-heading">
+                <span className="filter-input-label">Media type</span>
+                {mediaTypeFilter !== 'all' && (
+                  <button
+                    type="button"
+                    className="filter-reset-btn"
+                    onClick={() => setMediaTypeFilter('all')}
+                    title="Reset media type filter"
+                    aria-label="Reset media type filter"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+              <div className="filter-pills">
+                {(['all', 'videos', 'photos'] as const).map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`pill ${mediaTypeFilter === type ? 'pill-active' : ''}`}
+                    onClick={() => setMediaTypeFilter(type)}
+                    aria-pressed={mediaTypeFilter === type}
+                  >
+                    {type === 'all' ? 'All' : type === 'videos' ? 'Videos' : 'Photos'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {(features.favorites || (features.compatibilityCheck && hasIncompatibleVideos)) && (
             <div className="filter-pills filter-pills-extra">
               {features.favorites && (
@@ -633,12 +668,18 @@ export default function Sidebar({
   const directories = useStore((s) => s.directories);
   const includeSubfolders = useStore((s) => s.includeSubfolders);
   const setIncludeSubfolders = useStore((s) => s.setIncludeSubfolders);
+  const mediaMode = useStore((s) => s.mediaMode);
+  const setMediaMode = useStore((s) => s.setMediaMode);
   const statusFilter = useStore((s) => s.statusFilter);
   const setStatusFilter = useStore((s) => s.setStatusFilter);
   const sortBy = useStore((s) => s.sortBy);
   const setSortBy = useStore((s) => s.setSortBy);
   const sortOrder = useStore((s) => s.sortOrder);
   const setSortOrder = useStore((s) => s.setSortOrder);
+  const photoSortBy = useStore((s) => s.photoSortBy);
+  const setPhotoSortBy = useStore((s) => s.setPhotoSortBy);
+  const photoSortOrder = useStore((s) => s.photoSortOrder);
+  const setPhotoSortOrder = useStore((s) => s.setPhotoSortOrder);
   const features = useStore((s) => s.settings.features);
   const stats = useStore((s) => s.stats);
   const videoCount = useStore((s) => s.videos.length);
@@ -792,8 +833,8 @@ export default function Sidebar({
   ];
   const reviewedPercent = stats.total > 0 ? Math.round(((stats.total - stats.pending) / stats.total) * 100) : 0;
   const reviewLabel = filteredVideoCount === videoCount
-    ? `Review ${filteredVideoCount} ${filteredVideoCount === 1 ? 'video' : 'videos'}`
-    : `Review ${filteredVideoCount} filtered`;
+    ? `Review ${filteredVideoCount.toLocaleString()} ${filteredVideoCount === 1 ? 'item' : 'items'}`
+    : `Review ${filteredVideoCount.toLocaleString()} filtered`;
 
   return (
     <aside className="sidebar">
@@ -870,6 +911,25 @@ export default function Sidebar({
               <History size={14} />
             </button>
           )}
+        </div>
+        <div className="session-mode-selector" role="group" aria-label="Media mode">
+          {([
+            { key: 'videos', label: 'Videos only', icon: Film },
+            { key: 'photos', label: 'Photos only', icon: Image },
+            { key: 'both', label: 'Both', icon: Layers },
+          ] as const satisfies ReadonlyArray<{ key: MediaMode; label: string; icon: typeof Film }>).map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              type="button"
+              className={`session-mode-btn ${mediaMode === key ? 'active' : ''}`}
+              onClick={() => setMediaMode(key)}
+              aria-pressed={mediaMode === key}
+              title={`Mode: ${label}`}
+            >
+              <Icon size={12} aria-hidden="true" />
+              <span>{label}</span>
+            </button>
+          ))}
         </div>
         {showRecents && recents.recentSessions.length > 1 && (
           <div className="recents-panel">
@@ -997,57 +1057,110 @@ export default function Sidebar({
                 Group by folder
               </button>
 
-              {groupByFolder ? (
+              {(groupByFolder || mediaMode === 'both') ? (
                 <div className="sort-nested-options">
-                  <div className="sort-group">
-                    <div className="sort-group-heading">
-                      <span className="sort-label">Folders</span>
-                      <button
-                        className="sort-order-btn"
-                        onClick={() => setFolderSortOrder(folderSortOrder === 'asc' ? 'desc' : 'asc')}
-                        title={`Folder order: ${folderSortOrder === 'asc' ? 'ascending' : 'descending'}`}
-                        aria-label={`Folder order: ${folderSortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                  {groupByFolder && (
+                    <div className="sort-group">
+                      <div className="sort-group-heading">
+                        <span className="sort-label">Folders</span>
+                        <button
+                          className="sort-order-btn"
+                          onClick={() => setFolderSortOrder(folderSortOrder === 'asc' ? 'desc' : 'asc')}
+                          title={`Folder order: ${folderSortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                          aria-label={`Folder order: ${folderSortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                        >
+                          <ArrowUpDown size={12} style={{ transform: folderSortOrder === 'desc' ? 'scaleY(-1)' : 'none' }} />
+                        </button>
+                      </div>
+                      <select
+                        className="sidebar-select"
+                        aria-label="Folder order"
+                        value={folderSortBy}
+                        onChange={(e) => setFolderSortBy(e.target.value as 'name' | 'size')}
                       >
-                        <ArrowUpDown size={12} style={{ transform: folderSortOrder === 'desc' ? 'scaleY(-1)' : 'none' }} />
-                      </button>
+                        <option value="name">Name</option>
+                        <option value="size">Size</option>
+                      </select>
                     </div>
-                    <select
-                      className="sidebar-select"
-                      aria-label="Folder order"
-                      value={folderSortBy}
-                      onChange={(e) => setFolderSortBy(e.target.value as 'name' | 'size')}
-                    >
-                      <option value="name">Name</option>
-                      <option value="size">Size</option>
-                    </select>
-                  </div>
-                  <div className="sort-group">
-                    <div className="sort-group-heading">
-                      <span className="sort-label">Videos</span>
-                      <button
-                        className="sort-order-btn"
-                        onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-                        title={`Video order: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
-                        aria-label={`Video order: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                  )}
+                  {mediaMode !== 'photos' && (
+                    <div className="sort-group">
+                      <div className="sort-group-heading">
+                        <span className="sort-label">Videos</span>
+                        <button
+                          className="sort-order-btn"
+                          onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                          title={`Video order: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                          aria-label={`Video order: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                        >
+                          <ArrowUpDown size={12} style={{ transform: sortOrder === 'desc' ? 'scaleY(-1)' : 'none' }} />
+                        </button>
+                      </div>
+                      <select
+                        className="sidebar-select"
+                        aria-label="Video order"
+                        value={sortBy}
+                        onChange={(e) => setSortBy(e.target.value as SortField)}
                       >
-                        <ArrowUpDown size={12} style={{ transform: sortOrder === 'desc' ? 'scaleY(-1)' : 'none' }} />
-                      </button>
+                        <option value="name">Name</option>
+                        <option value="size">Size</option>
+                        <option value="duration">Duration</option>
+                        <option value="date">Date</option>
+                        {features.ratings && <option value="rating">Rating</option>}
+                        {features.codecBadges && <option value="resolution">Resolution</option>}
+                        {features.codecBadges && <option value="fps">FPS</option>}
+                      </select>
                     </div>
-                    <select
-                      className="sidebar-select"
-                      aria-label="Video order"
-                      value={sortBy}
-                      onChange={(e) => setSortBy(e.target.value as SortField)}
-                    >
-                      <option value="name">Name</option>
-                      <option value="size">Size</option>
-                      <option value="duration">Duration</option>
-                      <option value="date">Date</option>
-                      {features.ratings && <option value="rating">Rating</option>}
-                      {features.codecBadges && <option value="resolution">Resolution</option>}
-                      {features.codecBadges && <option value="fps">FPS</option>}
-                    </select>
-                  </div>
+                  )}
+                  {mediaMode !== 'videos' && (
+                    <div className="sort-group">
+                      <div className="sort-group-heading">
+                        <span className="sort-label">Photos</span>
+                        <button
+                          className="sort-order-btn"
+                          onClick={() => setPhotoSortOrder(photoSortOrder === 'asc' ? 'desc' : 'asc')}
+                          title={`Photo order: ${photoSortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                          aria-label={`Photo order: ${photoSortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                        >
+                          <ArrowUpDown size={12} style={{ transform: photoSortOrder === 'desc' ? 'scaleY(-1)' : 'none' }} />
+                        </button>
+                      </div>
+                      <select
+                        className="sidebar-select"
+                        aria-label="Photo order"
+                        value={photoSortBy}
+                        onChange={(e) => setPhotoSortBy(e.target.value as PhotoSortField)}
+                      >
+                        <option value="name">Name</option>
+                        <option value="size">Size</option>
+                        <option value="resolution">Resolution</option>
+                        <option value="date">Date</option>
+                        {features.ratings && <option value="rating">Rating</option>}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              ) : mediaMode === 'photos' ? (
+                <div className="sort-row">
+                  <select
+                    className="sidebar-select"
+                    aria-label="Photo order"
+                    value={photoSortBy}
+                    onChange={(e) => setPhotoSortBy(e.target.value as PhotoSortField)}
+                  >
+                    <option value="name">Name</option>
+                    <option value="size">Size</option>
+                    <option value="resolution">Resolution</option>
+                    <option value="date">Date</option>
+                    {features.ratings && <option value="rating">Rating</option>}
+                  </select>
+                  <button
+                    className="btn btn-icon"
+                    onClick={() => setPhotoSortOrder(photoSortOrder === 'asc' ? 'desc' : 'asc')}
+                    title={photoSortOrder === 'asc' ? 'Ascending' : 'Descending'}
+                  >
+                    <ArrowUpDown size={14} style={{ transform: photoSortOrder === 'desc' ? 'scaleY(-1)' : 'none' }} />
+                  </button>
                 </div>
               ) : (
                 <div className="sort-row">

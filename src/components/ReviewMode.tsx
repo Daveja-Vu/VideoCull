@@ -1,9 +1,10 @@
 import { createContext, useContext, useEffect, useCallback, useState, useRef, useMemo, memo, type CSSProperties } from 'react';
 import useStore from '../store';
 import ThumbnailStrip from './ThumbnailStrip';
-import { formatSize, formatDuration, formatDate, calcThumbGrid, formatCodecLabel, formatFps, formatResolutionLabel } from '../utils';
+import { formatSize, formatDuration, formatDate, calcThumbGrid, calculateThumbnailTimestamps, formatCodecLabel, formatFps, formatResolutionLabel, isPhotoPath, isWebRenderablePhoto, isWebSupported } from '../utils';
+import { FOLDER_HOTKEY_SLOTS, type FolderHotkeySlot } from '../types';
 import {
-  Check, Trash2, SkipForward, Undo2, X, Play,
+  Check, Trash2, SkipForward, Undo2, X, Play, FolderInput,
   ChevronLeft, ChevronRight, HardDrive, Clock, Calendar, Bookmark, RotateCcw, Heart, Star,
   LayoutGrid,
   Pause,
@@ -11,7 +12,6 @@ import {
 import '@videojs/react/video/neutral-skin.css';
 import { NeutralVideoSkin, Video, VideoPlayer as VideoJsPlayer } from '@videojs/react/video';
 import { Hotkey, type HotkeyProps } from '@videojs/react';
-import { isWebSupported } from '../utils';
 import { matchesKeybind, formatKeybind } from '../keybinds';
 import { beginDevInteraction, completeDevInteractionOnNextPaint, recordDevCounter } from '../perf-dev';
 import ContextMenu, { copyTextToClipboard } from './ContextMenu';
@@ -158,10 +158,30 @@ const VideoPlayer = memo(({ videoUrl, videoRef, muted }: {
   </VideoJsPlayer>
 ),(prev, next) => prev.videoUrl === next.videoUrl && prev.videoRef === next.videoRef);
 
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLSelectElement ||
+    target instanceof HTMLTextAreaElement ||
+    target.isContentEditable
+  );
+}
+
 function isFocusableKeyboardTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement) || target === document.body) return false;
   if (target.closest('.review-video-skin')) return false;
   return Boolean(target.closest('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])'));
+}
+
+function getFolderHotkeySlot(e: KeyboardEvent): FolderHotkeySlot | null {
+  if ((FOLDER_HOTKEY_SLOTS as readonly string[]).includes(e.key)) {
+    return e.key as FolderHotkeySlot;
+  }
+  if (/^(?:Digit|Numpad)[0-9]$/.test(e.code)) {
+    return e.code.slice(-1) as FolderHotkeySlot;
+  }
+  return null;
 }
 
 export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocked?: boolean }) {
@@ -176,6 +196,7 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
   const undo = useStore((s) => s.undo);
   const undoStack = useStore((s) => s.undoStack);
   const globalMute = useStore((s) => s.settings.globalMute);
+  const skipIntroDelaySecs = useStore((s) => s.settings.skipIntroDelaySecs);
   const keepReviewControlsVisible = useStore((s) => s.settings.keepReviewControlsVisible);
   const keyReset = useStore((s) => s.settings.keyReset);
   const keyUndo = useStore((s) => s.settings.keyUndo);
@@ -187,6 +208,8 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
   const removeBookmark = useStore((s) => s.removeBookmark);
   const setVideoRating = useStore((s) => s.setVideoRating);
   const toggleFavorite = useStore((s) => s.toggleFavorite);
+  const moveVideosToHotkeyFolder = useStore((s) => s.moveVideosToHotkeyFolder);
+  const folderHotkeys = useStore((s) => s.settings.folderHotkeys);
   const features = useStore((s) => s.settings.features);
   const pushToast = useStore((s) => s.pushToast);
   const isSettingsModalOpen = useStore((s) => s.isSettingsModalOpen);
@@ -217,6 +240,7 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
   const bookmarks = video?.bookmarks ?? [];
 
   const lastVideoIdRef = useRef<string | null>(null);
+  const pendingSeekTimeRef = useRef<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
@@ -230,11 +254,55 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
     return (cols * 16) / (rows * 9);
   }, [video?.thumbnails?.length]);
 
+  const isPhoto = useMemo(() => (
+    video ? isPhotoPath(video.path) : false
+  ), [video]);
+
   const isSupported = useMemo(() => {
-    if (!video) return false;
+    if (!video || isPhoto) return false;
     return isWebSupported(video.path);
-  }, [video]);
-  const canPlayInReview = isSupported && (!features.compatibilityCheck || video?.compatible !== false);
+  }, [video, isPhoto]);
+  const canPlayInReview = !isPhoto && isSupported && (!features.compatibilityCheck || video?.compatible !== false);
+
+  const thumbTimestamps = useMemo(() => {
+    const count = video?.thumbnails?.length ?? 0;
+    if (!video || isPhoto || count <= 1) return [0];
+    return calculateThumbnailTimestamps(video.durationSecs, count, skipIntroDelaySecs);
+  }, [isPhoto, skipIntroDelaySecs, video]);
+
+  const handleThumbClick = useCallback((index: number) => {
+    if (!video || isPhoto) return;
+    if (!canPlayInReview) {
+      if (window.electronAPI) openVideoExternally(video.path);
+      return;
+    }
+    const targetTime = thumbTimestamps[index] ?? 0;
+    pendingSeekTimeRef.current = targetTime > 0 ? targetTime : null;
+    setCurrentTime(targetTime);
+    setIsPlaying(true);
+  }, [canPlayInReview, isPhoto, thumbTimestamps, video]);
+
+  const getThumbTitle = useCallback((index: number) => {
+    if (!video || isPhoto) return undefined;
+    if (!canPlayInReview) return 'Open in external player';
+    const count = video.thumbnails?.length ?? 0;
+    if (count <= 1) return 'Play video';
+    const targetTime = thumbTimestamps[index] ?? 0;
+    return `Play from ${formatDuration(targetTime)}`;
+  }, [canPlayInReview, isPhoto, thumbTimestamps, video]);
+
+  const configuredFolderHotkeys = useMemo(() => (
+    FOLDER_HOTKEY_SLOTS.flatMap((slot) => {
+      const cfg = folderHotkeys?.[slot];
+      if (!cfg?.folderPath) return [];
+      const fallbackName = cfg.folderPath.split(/[/\\]/).filter(Boolean).slice(-1)[0] || cfg.folderPath;
+      return [{
+        slot,
+        folderPath: cfg.folderPath,
+        label: cfg.label?.trim() || fallbackName,
+      }];
+    })
+  ), [folderHotkeys]);
 
   const videoUrl = useMemo(() => (
     video ? `video://local/${encodeURIComponent(video.path)}` : ''
@@ -274,9 +342,10 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
     lastVideoIdRef.current = currentVideoId;
 
     const shouldPlay = useStore.getState().reviewAutoPlay;
+    pendingSeekTimeRef.current = null;
     if (shouldPlay) {
       useStore.getState().setReviewAutoPlay(false);
-      setIsPlaying(true);
+      setIsPlaying(!isPhotoPath(video?.path));
     } else {
       setIsPlaying(false);
     }
@@ -284,7 +353,7 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
     setAudioDecodeError(false);
   }, [video?.id]);
 
-  // When playback starts: apply persisted speed, then sync speed changes back from the player
+  // When playback starts: apply persisted speed, seek if started from a thumbnail frame, and sync events
   useEffect(() => {
     if (!isPlaying) return;
     const el = videoRef.current;
@@ -292,6 +361,22 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
 
     recordDevCounter('review.playbackSessionStart');
     el.playbackRate = playbackSpeed;
+
+    const pendingSeek = pendingSeekTimeRef.current;
+    pendingSeekTimeRef.current = null;
+    const applyPendingSeek = () => {
+      if (pendingSeek !== null && pendingSeek > 0) {
+        el.currentTime = pendingSeek;
+        setCurrentTime(pendingSeek);
+      }
+    };
+    if (pendingSeek !== null && pendingSeek > 0) {
+      if (el.readyState >= 1) {
+        applyPendingSeek();
+      } else {
+        el.addEventListener('loadedmetadata', applyPendingSeek, { once: true });
+      }
+    }
 
     const onRateChange = () => setPlaybackSpeed(el.playbackRate);
     const onPlayerPlay = () => setIsPaused(false);
@@ -306,6 +391,7 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
     el.addEventListener('play', onPlayerPlay);
     el.addEventListener('pause', onPlayerPause);
     return () => {
+      el.removeEventListener('loadedmetadata', applyPendingSeek);
       el.removeEventListener('ratechange', onRateChange);
       el.removeEventListener('timeupdate', onTimeUpdate);
       el.removeEventListener('play', onPlayerPlay);
@@ -482,7 +568,7 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
       if (e.defaultPrevented) return;
       if (shortcutsBlocked) return;
       if (document.querySelector('.settings-overlay, .shortcuts-overlay')) return;
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (isEditableKeyboardTarget(e.target)) return;
       // Stand down while the keybind recorder is capturing
       if (document.body.hasAttribute('data-capturing-keybind')) return;
       // This capture listener runs before an open menu's own keys: Escape there closes the menu, not Review.
@@ -498,6 +584,24 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
         else close();
         return;
       }
+
+      if (
+        video &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        const slot = getFolderHotkeySlot(e);
+        if (slot && s.folderHotkeys?.[slot]?.folderPath) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (isPlaying) setIsPlaying(false);
+          void moveVideosToHotkeyFolder(slot, [video.id]);
+          return;
+        }
+      }
+
       if (isFocusableKeyboardTarget(e.target)) return;
 
       // Playing-context shortcuts
@@ -571,7 +675,7 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
     // cannot be consumed by the player's own keyboard bindings first.
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [markKeep, markDelete, skip, resetStatus, handleUndo, close, goBack, advance, handlePlay, isPlaying, video, addBookmarkNow, jumpToNextUndecided, shortcutsBlocked]);
+  }, [markKeep, markDelete, skip, resetStatus, handleUndo, close, goBack, advance, handlePlay, isPlaying, video, addBookmarkNow, jumpToNextUndecided, shortcutsBlocked, moveVideosToHotkeyFolder]);
 
   if (!video) {
     return (
@@ -661,10 +765,29 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
 
         <div className="review-center" onContextMenu={handleReviewContextMenu}>
           <div
-            className={`review-thumbs ${isPlaying ? 'playing' : ''}`}
-            style={!isPlaying ? { aspectRatio: `${dynamicAspectRatio}` } : undefined}
+            className={`review-thumbs ${isPlaying ? 'playing' : ''} ${isPhoto ? 'review-photo-frame' : ''}`}
+            style={!isPlaying && !isPhoto ? { aspectRatio: `${dynamicAspectRatio}` } : undefined}
           >
-            {isPlaying ? (
+            {isPhoto ? (
+              <img
+                className="review-photo-full"
+                src={
+                  isWebRenderablePhoto(video.path)
+                    ? videoUrl
+                    : (video.thumbnails?.[0] ? `thumb://local/${encodeURIComponent(video.thumbnails[0])}` : videoUrl)
+                }
+                onError={(e) => {
+                  const thumbFallback = video.thumbnails?.[0]
+                    ? `thumb://local/${encodeURIComponent(video.thumbnails[0])}`
+                    : null;
+                  if (thumbFallback && e.currentTarget.src !== thumbFallback) {
+                    e.currentTarget.src = thumbFallback;
+                  }
+                }}
+                alt={video.filename}
+                draggable={false}
+              />
+            ) : isPlaying ? (
               <>
                 <ReviewShortcutsBlocked.Provider value={shortcutsBlocked}>
                   <VideoPlayer
@@ -690,7 +813,13 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
               </>
             ) : (
               <>
-                <ThumbnailStrip thumbnails={video.thumbnails} osThumbnail={video.osThumbnail} compact={true} />
+                <ThumbnailStrip
+                  thumbnails={video.thumbnails}
+                  osThumbnail={video.osThumbnail}
+                  compact={true}
+                  onThumbClick={handleThumbClick}
+                  getThumbTitle={getThumbTitle}
+                />
                 {bookmarks.length > 0 && (
                   <div className="review-bookmark-count">
                     <Bookmark size={11} />
@@ -759,15 +888,20 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
 
           <div className="review-meta-row">
             <span className="review-meta-item"><HardDrive size={13} />{formatSize(video.sizeBytes)}</span>
-            <span className="review-meta-item"><Clock size={13} />{formatDuration(video.durationSecs)}</span>
+            {!isPhoto && (
+              <span className="review-meta-item"><Clock size={13} />{formatDuration(video.durationSecs)}</span>
+            )}
+            {isPhoto && video.width && video.height && (
+              <span className="review-meta-item">{video.width} × {video.height}</span>
+            )}
             <span className="review-meta-item"><Calendar size={13} />{formatDate(video.metadataDate || video.date)}</span>
-            {features.codecBadges && formatResolutionLabel(video.width, video.height) && (
-              <span className="review-meta-item review-meta-badge">{formatResolutionLabel(video.width, video.height)}</span>
+            {features.codecBadges && formatResolutionLabel(video.width, video.height, isPhoto) && (
+              <span className="review-meta-item review-meta-badge">{formatResolutionLabel(video.width, video.height, isPhoto)}</span>
             )}
-            {features.codecBadges && formatCodecLabel(video.videoCodec) && (
-              <span className="review-meta-item review-meta-badge">{formatCodecLabel(video.videoCodec)}</span>
+            {features.codecBadges && formatCodecLabel(video.videoCodec, video.path) && (
+              <span className="review-meta-item review-meta-badge">{formatCodecLabel(video.videoCodec, video.path)}</span>
             )}
-            {features.codecBadges && formatFps(video.fps) && (
+            {!isPhoto && features.codecBadges && formatFps(video.fps) && (
               <span className="review-meta-item review-meta-badge">{formatFps(video.fps)}</span>
             )}
           </div>
@@ -797,6 +931,27 @@ export default function ReviewMode({ keyboardBlocked = false }: { keyboardBlocke
           <ChevronRight size={28} />
         </button>
       </div>
+
+      {configuredFolderHotkeys.length > 0 && (
+        <div className="review-folder-hotkeys" aria-label="Move to folder shortcuts">
+          {configuredFolderHotkeys.map(({ slot, folderPath, label }) => (
+            <button
+              key={slot}
+              type="button"
+              className="review-folder-hotkey-btn"
+              onClick={() => {
+                if (isPlaying) setIsPlaying(false);
+                void moveVideosToHotkeyFolder(slot, [video.id]);
+              }}
+              title={`Move to ${folderPath} (${slot})`}
+            >
+              <FolderInput size={13} />
+              <span>{label}</span>
+              <kbd>{slot}</kbd>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="review-actions">
         <button className="review-action-btn review-btn-reset" onClick={resetStatus} title={`Reset (${formatKeybind(keyReset)})`}>

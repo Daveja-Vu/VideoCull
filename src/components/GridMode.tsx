@@ -10,11 +10,11 @@ import {
 } from 'react';
 import { List } from 'react-window';
 import type { ListImperativeAPI, RowComponentProps } from 'react-window';
-import type { Video } from '../types';
+import { FOLDER_HOTKEY_SLOTS, type FolderHotkeySlot, type Video } from '../types';
 import useStore from '../store';
 import useActiveValue from '../hooks/useActiveValue';
 import VideoCard from './VideoCard';
-import { formatSize, getFolderLabel, getFolderPath, isFolderInside, isWebSupported } from '../utils';
+import { formatMediaCountSummary, formatSize, getFolderLabel, getFolderPath, isFolderInside, isPhotoPath, isWebSupported } from '../utils';
 import { matchesKeybind } from '../keybinds';
 import { Check, ChevronDown, RefreshCw, Search, SkipForward, RotateCcw, Trash2, X, Play } from 'lucide-react';
 import ContextMenu, { copyTextToClipboard } from './ContextMenu';
@@ -485,6 +485,25 @@ export default function GridMode({ onReviewFolder, onRegenerateThumbnails }: Gri
         return;
       }
 
+      if (
+        isSelectionMode &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !useStore.getState().isSettingsModalOpen &&
+        !document.body.hasAttribute('data-capturing-keybind') &&
+        (FOLDER_HOTKEY_SLOTS as readonly string[]).includes(event.key)
+      ) {
+        const slot = event.key as FolderHotkeySlot;
+        const state = useStore.getState();
+        if (state.settings.folderHotkeys?.[slot]?.folderPath) {
+          event.preventDefault();
+          void state.moveVideosToHotkeyFolder(slot, Array.from(selectedIds));
+          return;
+        }
+      }
+
       if (event.key !== 'Escape') return;
       if (searchQuery || document.activeElement === searchInputRef.current) {
         event.preventDefault();
@@ -503,7 +522,7 @@ export default function GridMode({ onReviewFolder, onRegenerateThumbnails }: Gri
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [clearGridSelection, gridActive, isSelectionMode, keySearch, searchQuery, setSearchQuery]);
+  }, [clearGridSelection, gridActive, isSelectionMode, keySearch, searchQuery, selectedIds, setSearchQuery]);
 
   const getRowTop = useCallback((rowIndex: number) => {
     let top = 0;
@@ -633,7 +652,7 @@ export default function GridMode({ onReviewFolder, onRegenerateThumbnails }: Gri
 
   const handleCardPlay = useCallback((video: Video, event: ReactMouseEvent) => {
     persistCurrentScroll();
-    const canPlayInReview = isWebSupported(video.path) && (!compatibilityCheckEnabled || video.compatible !== false);
+    const canPlayInReview = (isPhotoPath(video.path) || isWebSupported(video.path)) && (!compatibilityCheckEnabled || video.compatible !== false);
     if (canPlayInReview && !event.ctrlKey && !event.metaKey) {
       useStore.getState().enterReviewAndPlay(video.id);
     } else if (window.electronAPI) {
@@ -962,9 +981,7 @@ export default function GridMode({ onReviewFolder, onRegenerateThumbnails }: Gri
     <div className="grid-mode" ref={containerRef} tabIndex={-1}>
       <div className="grid-toolbar">
         <span className="grid-result-count">
-          {searchQuery.trim()
-            ? `${activeFilteredVideos.length} of ${activeVideos.length} videos`
-            : `${activeFilteredVideos.length} ${activeFilteredVideos.length === 1 ? 'video' : 'videos'}`}
+          {formatMediaCountSummary(activeFilteredVideos, searchQuery.trim() ? activeVideos : undefined, activeVideos)}
         </span>
         <label className="grid-search-field">
           <Search size={15} aria-hidden="true" />

@@ -3,6 +3,7 @@ const fs = require('fs/promises');
 const crypto = require('crypto');
 const { Worker } = require('worker_threads');
 const mediaProcess = require('./media-process');
+const { isPhotoFile } = require('./scanner');
 const { createDuplicateSessionCache } = require('./duplicate-session-cache');
 const { processingPause } = require('./processing-pause');
 const {
@@ -115,9 +116,10 @@ function createQueueCursor(items) {
 }
 
 function buildGrayFrameExtractionArgs(videoPath, timestamp, executionOptions = {}) {
+  const isPhoto = isPhotoFile(videoPath);
   const args = [
     '-v', 'error',
-    '-ss', String(Math.max(0, Number(timestamp) || 0)),
+    ...(isPhoto ? [] : ['-ss', String(Math.max(0, Number(timestamp) || 0))]),
     '-i', videoPath,
     '-frames:v', '1',
     '-vf', FRAME_FILTER,
@@ -428,9 +430,16 @@ async function buildFingerprintsForVideo(video, settings, run, executionOptions)
     }
   }
   assertNotCancelled(run);
+  const targetSampleCount = Math.max(1, Number(settings.sampleCount) || 1);
+  const expandedFrames = grayFrames.length === 1 && targetSampleCount > 1
+    ? Array.from({ length: targetSampleCount }, () => grayFrames[0])
+    : grayFrames;
+  const expandedTimestamps = timestamps.length === 1 && targetSampleCount > 1
+    ? Array.from({ length: targetSampleCount }, () => timestamps[0] ?? 0)
+    : timestamps;
   return runDuplicateActivity(
     run,
-    () => buildFingerprintsFromGrayFrames(grayFrames, timestamps, settings),
+    () => buildFingerprintsFromGrayFrames(expandedFrames, expandedTimestamps, settings),
   );
 }
 

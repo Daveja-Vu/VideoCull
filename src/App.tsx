@@ -19,7 +19,7 @@ import { copyTextToClipboard } from './components/ContextMenu';
 import useAppMenuState from './hooks/useAppMenuState';
 import privacyScreenDashboardCover from './assets/privacy-screen-dashboard-cover.png';
 import type { DuplicateComparisonMode, FolderFilter, MediaProbeVideoInput, MenuAction, ScanDirectoryResult, ScanSummary, SortField, UpdateInfo, Video } from './types';
-import { describeThumbnailWork, detectVideoCompatibility, formatDeleteConfirmation, formatRecentPath, isFolderInside, normalizeFolder, trashName } from './utils';
+import { describeThumbnailWork, detectVideoCompatibility, formatDeleteConfirmation, formatMediaCountSummary, formatRecentPath, isFolderInside, isPhotoPath, normalizeFolder, trashName } from './utils';
 import { deleteWithPermanentReview } from './deletion';
 import { completeDevInteractionOnNextPaint, recordDevPerf, recordReactCommit } from './perf-dev';
 import { Volume2, VolumeX } from 'lucide-react';
@@ -48,7 +48,13 @@ function groupVideosByLoadedRoot(videos: Video[], roots: string[], fallbackRoot:
   return groups;
 }
 
-function expectedThumbnailCountForDuration(durationSecs: number | null | undefined, thumbsPerVideo: number, skipIntroDelaySecs: number): number {
+function expectedThumbnailCountForDuration(
+  durationSecs: number | null | undefined,
+  thumbsPerVideo: number,
+  skipIntroDelaySecs: number,
+  filePath?: string | null,
+): number {
+  if (isPhotoPath(filePath) || durationSecs === 0) return 1;
   if (durationSecs !== null && durationSecs !== undefined && durationSecs > 0) {
     const end = durationSecs * 0.97;
     if (
@@ -124,6 +130,7 @@ export default function App() {
   const setDuplicateGroupsMode = useStore((s) => s.setDuplicateGroupsMode);
   const setFolderFilter = useStore((s) => s.setFolderFilter);
   const includeSubfolders = useStore((s) => s.includeSubfolders);
+  const mediaMode = useStore((s) => s.mediaMode);
   const thumbsPerVideo = useStore((s) => s.settings.thumbsPerVideo);
   const skipIntroDelaySecs = useStore((s) => s.settings.skipIntroDelaySecs);
   const toasts = useStore((s) => s.toasts);
@@ -154,6 +161,7 @@ export default function App() {
     key: '',
     directories: [] as string[],
     includeSubfolders,
+    mediaMode,
   });
 
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
@@ -491,8 +499,16 @@ export default function App() {
       const scannedGroups = [];
       const scanSummaries: ScanSummary[] = [];
       for (const dirPath of dirPaths) {
-        const scanResult = normalizeScanResult(await window.electronAPI.scanDirectory(dirPath, includeSubfolders));
-        scannedGroups.push({ dirPath, videos: scanResult.videos });
+        const rawScanResult = mediaMode === 'both'
+          ? await window.electronAPI.scanDirectory(dirPath, includeSubfolders)
+          : await window.electronAPI.scanDirectory(dirPath, includeSubfolders, { mediaMode });
+        const scanResult = normalizeScanResult(rawScanResult);
+        const modeFiltered = mediaMode === 'videos'
+          ? scanResult.videos.filter((video) => !isPhotoPath(video.path))
+          : mediaMode === 'photos'
+            ? scanResult.videos.filter((video) => isPhotoPath(video.path))
+            : scanResult.videos;
+        scannedGroups.push({ dirPath, videos: modeFiltered });
         if (scanResult.summary) scanSummaries.push(scanResult.summary);
       }
       if (scanId !== scanIdRef.current) return;
@@ -512,7 +528,7 @@ export default function App() {
         }),
       }));
       const allVideos = uniqueScannedGroups.flatMap((group) => group.videos);
-      const expectedThumbCount = (v: typeof allVideos[number]) => expectedThumbnailCountForDuration(v.durationSecs, thumbsPerVideo, skipIntroDelaySecs);
+      const expectedThumbCount = (v: typeof allVideos[number]) => expectedThumbnailCountForDuration(v.durationSecs, thumbsPerVideo, skipIntroDelaySecs, v.path);
       const normalizeVideoThumbs = (video: typeof allVideos[number]) => ({
         ...video,
         thumbnails: video.thumbnails?.slice(0, expectedThumbCount(video)) ?? [],
@@ -538,7 +554,7 @@ export default function App() {
       const folderLabel = dirPaths.length === 1 ? formatRecentPath(dirPaths[0]) : `${dirPaths.length} folders`;
       pushToast({
         title: dirPaths.length === 1 ? 'Folder loaded' : 'Folders loaded',
-        detail: `${normalizedVideos.length} ${normalizedVideos.length === 1 ? 'video' : 'videos'} found in ${folderLabel}.`,
+        detail: `${formatMediaCountSummary(normalizedVideos)} found in ${folderLabel}.`,
         kind: 'success',
         dedupeKey: `scan-loaded:${dirPaths.join('|')}`,
       });
@@ -678,7 +694,7 @@ export default function App() {
         kind: 'error',
       });
     }
-  }, [applyDuplicateResult, includeSubfolders, thumbsPerVideo, skipIntroDelaySecs, setVideos, setIsScanning, setScanProgress, setIsGenerating, setGenProgress, setDuplicateProgress, setIsFindingDuplicates, pushToast]);
+  }, [applyDuplicateResult, includeSubfolders, mediaMode, thumbsPerVideo, skipIntroDelaySecs, setVideos, setIsScanning, setScanProgress, setIsGenerating, setGenProgress, setDuplicateProgress, setIsFindingDuplicates, pushToast]);
 
   const handleRegenerateThumbnails = useCallback(async (selectedVideos: Video[]) => {
     if (!window.electronAPI || !directory || selectedVideos.length === 0) return;
@@ -709,7 +725,7 @@ export default function App() {
       return;
     }
 
-    const expectedThumbCount = (video: Video) => expectedThumbnailCountForDuration(video.durationSecs, thumbsPerVideo, skipIntroDelaySecs);
+    const expectedThumbCount = (video: Video) => expectedThumbnailCountForDuration(video.durationSecs, thumbsPerVideo, skipIntroDelaySecs, video.path);
 
     const countIncompleteSelected = () => useStore.getState().videos.filter((video) => (
       selectedIds.has(video.id) &&
@@ -1138,7 +1154,7 @@ export default function App() {
   }, [reviewMode, setFolderFilter]);
 
   useEffect(() => {
-    const key = `${directories.join('\0')}|subfolders:${includeSubfolders}`;
+    const key = `${directories.join('\0')}|subfolders:${includeSubfolders}|mode:${mediaMode}`;
     const previous = autoScanStateRef.current;
     if (key === previous.key) return;
 
@@ -1146,6 +1162,7 @@ export default function App() {
     const rootsToScan = directories.filter((rootPath) => !previousDirectoryKeys.has(normalizeFolder(rootPath)));
     const canPreserveExisting = previous.directories.length > 0 &&
       previous.includeSubfolders === includeSubfolders &&
+      previous.mediaMode === mediaMode &&
       previous.directories.every((previousRoot) => (
         directories.some((currentRoot) => isFolderInside(previousRoot, currentRoot))
       ));
@@ -1154,6 +1171,7 @@ export default function App() {
       key,
       directories: [...directories],
       includeSubfolders,
+      mediaMode,
     };
     if (directories.length === 0) return;
     // Remove from Session already dropped the folder's videos in place: the rest stay loaded as they are.
@@ -1162,6 +1180,7 @@ export default function App() {
     const droppedInPlace = rootsToScan.length === 0 &&
       !useStore.getState().isScanning &&
       previous.includeSubfolders === includeSubfolders &&
+      previous.mediaMode === mediaMode &&
       useStore.getState().videos.every((video) => directories.some((root) => isFolderInside(video.path, root)));
     if (droppedInPlace) return;
     if (canPreserveExisting && rootsToScan.length > 0) {
@@ -1169,7 +1188,7 @@ export default function App() {
       return;
     }
     void handleScan(directories);
-  }, [directories, handleScan, includeSubfolders]);
+  }, [directories, handleScan, includeSubfolders, mediaMode]);
 
   // ── Drag & Drop ──────────────────────────────────────────────────────────
   const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -1445,7 +1464,7 @@ export default function App() {
           {isScanning && videoCount === 0 && (
             <div className="scanning-overlay">
               <div className="scanning-spinner" />
-              <p>Scanning for videos...</p>
+              <p>Scanning for media...</p>
             </div>
           )}
           {isScanning && videoCount > 0 && (

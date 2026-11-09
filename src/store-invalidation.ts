@@ -28,7 +28,7 @@ export type ViewInvalidationState = Pick<
   | 'sortBy'
   | 'groupByFolder'
   | 'folderSortBy'
->;
+> & Partial<Pick<VideoStore, 'photoSortBy'>>;
 
 function hasActiveSizeFilter(state: ViewInvalidationState) {
   return state.minSizeFilter > 0 || state.maxSizeFilter !== null;
@@ -50,15 +50,15 @@ export function changeAffectsCurrentView(
         if (hasActiveDurationFilter(state) || state.sortBy === 'duration') return true;
         break;
       case 'size':
-        if (hasActiveSizeFilter(state) || state.sortBy === 'size' || (state.groupByFolder && state.folderSortBy === 'size')) {
+        if (hasActiveSizeFilter(state) || state.sortBy === 'size' || state.photoSortBy === 'size' || (state.groupByFolder && state.folderSortBy === 'size')) {
           return true;
         }
         break;
       case 'metadataDate':
-        if (state.sortBy === 'date') return true;
+        if (state.sortBy === 'date' || state.photoSortBy === 'date') return true;
         break;
       case 'rating':
-        if (state.minRatingFilter > 0 || state.sortBy === 'rating') return true;
+        if (state.minRatingFilter > 0 || state.sortBy === 'rating' || state.photoSortBy === 'rating') return true;
         break;
       case 'favorite':
         if (state.favoritesFilter) return true;
@@ -73,7 +73,7 @@ export function changeAffectsCurrentView(
         if (state.duplicateFilter || state.duplicateGroupsMode) return true;
         break;
       case 'resolution':
-        if (state.sortBy === 'resolution') return true;
+        if (state.sortBy === 'resolution' || state.photoSortBy === 'resolution') return true;
         break;
       case 'fps':
         if (state.sortBy === 'fps') return true;

@@ -13,10 +13,12 @@ import useStore from '../store';
 import useActiveValue from '../hooks/useActiveValue';
 import type { DuplicateGroup, DuplicateViewMode, Video } from '../types';
 import {
+  formatCodecLabel,
   formatDuration,
   formatFps,
   formatResolutionLabel,
   formatSize,
+  isPhotoPath,
 } from '../utils';
 import {
   beginDevInteraction,
@@ -268,6 +270,11 @@ const DuplicateRowItem = memo(function DuplicateRowItem({
 }: DuplicateRowItemProps) {
   const statusBadge = statusBadgeContent(video);
   const thumbnailSrc = thumbSrc(video);
+  const isPhoto = isPhotoPath(video.path);
+  const photoResLabel = video.width && video.height
+    ? `${video.width}×${video.height} (${formatResolutionLabel(video.width, video.height, true)})`
+    : 'resolution --';
+  const photoCodecLabel = formatCodecLabel(video.videoCodec, video.path);
   const chip = (key: string, label: string) => {
     const state = flags[key] ?? 'equal';
     return (
@@ -304,11 +311,21 @@ const DuplicateRowItem = memo(function DuplicateRowItem({
           {parentPath(video.path)}
         </span>
         <span className="duplicate-meta-chips">
-          {chip('resolution', formatResolutionLabel(video.width, video.height))}
-          {chip('fps', formatFps(video.fps))}
-          {chip('bitrate', bitrateLabel(video))}
-          {chip('duration', formatDuration(video.durationSecs))}
-          {chip('size', formatSize(video.sizeBytes))}
+          {isPhoto ? (
+            <>
+              {chip('resolution', photoResLabel)}
+              {photoCodecLabel && chip('codec', photoCodecLabel)}
+              {chip('size', formatSize(video.sizeBytes))}
+            </>
+          ) : (
+            <>
+              {chip('resolution', formatResolutionLabel(video.width, video.height))}
+              {chip('fps', formatFps(video.fps))}
+              {chip('bitrate', bitrateLabel(video))}
+              {chip('duration', formatDuration(video.durationSecs))}
+              {chip('size', formatSize(video.sizeBytes))}
+            </>
+          )}
         </span>
       </div>
       {suggestedKeeperId === video.id && (

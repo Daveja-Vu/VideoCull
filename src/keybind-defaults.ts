@@ -1,6 +1,7 @@
 import { kb } from './keybinds';
 import type { Keybind, KeybindSettingKey } from './keybinds';
-import type { AppSettings, FeatureSettings } from './types';
+import type { AppSettings, FeatureSettings, FolderHotkeyConfig, FolderHotkeySlot } from './types';
+import { FOLDER_HOTKEY_SLOTS } from './types';
 import type { DuplicateSettings } from './types';
 import { parseRecentSessions, parseSavedSession } from './sessions';
 
@@ -152,6 +153,10 @@ export function migrateSettings(raw: Record<string, unknown>): Partial<AppSettin
     result.reopenLastSession = false;
   }
 
+  if (typeof result.rememberWindowSize !== 'boolean') {
+    result.rememberWindowSize = true;
+  }
+
   if (result.autoUpdates === undefined || result.autoUpdates === null) {
     result.autoUpdates = true;
   }
@@ -246,6 +251,26 @@ export function migrateSettings(raw: Record<string, unknown>): Partial<AppSettin
   if (typeof result.followLinks !== 'boolean') {
     result.followLinks = false;
   }
+
+  const normalizedFolderHotkeys: Partial<Record<FolderHotkeySlot, FolderHotkeyConfig>> = {};
+  if (result.folderHotkeys && typeof result.folderHotkeys === 'object' && !Array.isArray(result.folderHotkeys)) {
+    const rawHotkeys = result.folderHotkeys as Record<string, unknown>;
+    for (const slot of FOLDER_HOTKEY_SLOTS) {
+      const entry = rawHotkeys[slot];
+      if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        const folderPath = typeof (entry as { folderPath?: unknown }).folderPath === 'string'
+          ? (entry as { folderPath: string }).folderPath.trim()
+          : '';
+        const label = typeof (entry as { label?: unknown }).label === 'string'
+          ? (entry as { label: string }).label.trim()
+          : undefined;
+        if (folderPath) {
+          normalizedFolderHotkeys[slot] = label ? { folderPath, label } : { folderPath };
+        }
+      }
+    }
+  }
+  result.folderHotkeys = normalizedFolderHotkeys;
 
   return result as Partial<AppSettings>;
 }

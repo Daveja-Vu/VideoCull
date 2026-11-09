@@ -167,6 +167,23 @@
   border-color: rgba(255, 255, 255, 0.1);
 }
 
+.review-thumbs.review-photo-frame {
+  width: min(100%, var(--review-player-width, 1280px));
+  max-width: 1280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 5, 8, 0.72);
+}
+
+.review-photo-full {
+  display: block;
+  width: 100%;
+  max-height: calc(100vh - 380px - var(--title-bar-height, 0px));
+  object-fit: contain;
+  user-select: none;
+}
+
 
 /* ── Video Player ── */
 .video-player {
@@ -334,6 +351,55 @@
 .review-nav:disabled {
   opacity: 0.25;
   cursor: not-allowed;
+}
+
+/* ── Folder Hotkey Bar ── */
+.review-folder-hotkeys {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 108px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 24px;
+  z-index: 12;
+}
+
+.review-folder-hotkey-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  transition: var(--transition);
+  backdrop-filter: var(--blur-md);
+  -webkit-backdrop-filter: var(--blur-md);
+}
+
+.review-folder-hotkey-btn:hover {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.review-folder-hotkey-btn kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-app);
+  font-size: 10px;
+  font-family: 'Inter', monospace;
+  color: var(--text-tertiary);
+  border: 1px solid var(--border);
 }
 
 /* ── Actions ── */

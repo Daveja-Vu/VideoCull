@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import useStore from '../store';
-import { CircleHelp, FolderOpen, Moon, Settings, Sun, X } from 'lucide-react';
-import type { RecentSession, ToastInput, ToastKind } from '../types';
+import { CircleHelp, Film, FolderOpen, Image, Layers, Moon, Settings, Sun, X } from 'lucide-react';
+import type { MediaMode, RecentSession, ToastInput, ToastKind } from '../types';
 import { formatKeybind } from '../keybinds';
 import { modKeyName } from '../utils';
 import { DEFAULT_KEYBINDS } from '../keybind-defaults';
@@ -22,6 +22,8 @@ export default function EmptyState({ onNotify, onOpenDocumentation, onToggleThem
   const setDirectory = useStore((s) => s.setDirectory);
   const includeSubfolders = useStore((s) => s.includeSubfolders);
   const setIncludeSubfolders = useStore((s) => s.setIncludeSubfolders);
+  const mediaMode = useStore((s) => s.mediaMode);
+  const setMediaMode = useStore((s) => s.setMediaMode);
   const settings = useStore((s) => s.settings);
   const recents = useRecentSessions(onNotify);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; recent: RecentSession } | null>(null);
@@ -63,14 +65,35 @@ export default function EmptyState({ onNotify, onOpenDocumentation, onToggleThem
         Open Directory
       </button>
 
-      <label className="empty-subfolders">
-        <input 
-          type="checkbox" 
-          checked={includeSubfolders}
-          onChange={(e) => setIncludeSubfolders(e.target.checked)}
-        />
-        Include subfolders
-      </label>
+      <div className="empty-options-row">
+        <div className="empty-mode-selector" role="group" aria-label="Media mode">
+          {([
+            { key: 'videos', label: 'Videos only', icon: Film },
+            { key: 'photos', label: 'Photos only', icon: Image },
+            { key: 'both', label: 'Both', icon: Layers },
+          ] as const satisfies ReadonlyArray<{ key: MediaMode; label: string; icon: typeof Film }>).map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              type="button"
+              className={`empty-mode-btn ${mediaMode === key ? 'active' : ''}`}
+              onClick={() => setMediaMode(key)}
+              aria-pressed={mediaMode === key}
+            >
+              <Icon size={13} aria-hidden="true" />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+
+        <label className="empty-subfolders">
+          <input 
+            type="checkbox" 
+            checked={includeSubfolders}
+            onChange={(e) => setIncludeSubfolders(e.target.checked)}
+          />
+          Include subfolders
+        </label>
+      </div>
 
       {recents.recentSessions.length > 0 && (
         <div className="empty-recents">

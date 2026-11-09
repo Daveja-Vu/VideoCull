@@ -31,6 +31,10 @@
   position: relative;
 }
 
+.thumb-img-interactive {
+  cursor: pointer;
+}
+
 /* ── Placeholder ── */
 .thumb-strip-placeholder {
   display: flex;

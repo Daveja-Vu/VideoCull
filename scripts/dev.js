@@ -1,8 +1,19 @@
 const { createServer } = require('vite');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+
+function ensureMacDevBundleName(electronBinaryPath) {
+  if (process.platform !== 'darwin') return;
+  try {
+    const plistPath = path.resolve(electronBinaryPath, '..', '..', 'Info.plist');
+    execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleName VideoCull', plistPath], { stdio: 'ignore' });
+    execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleDisplayName VideoCull', plistPath], { stdio: 'ignore' });
+  } catch {
+    // Non-fatal in dev mode
+  }
+}
 
 /**
  * Wayland shells ignore the icon a window sets and take it from the desktop entry whose
@@ -53,6 +64,7 @@ async function main() {
 
   const electronPath = require('electron');
   ensureLinuxDevDesktopEntry(repoRoot, electronPath);
+  ensureMacDevBundleName(electronPath);
   const electron = spawn(electronPath, ['.'], {
     stdio: 'inherit',
     cwd: repoRoot,
